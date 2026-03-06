@@ -146,7 +146,12 @@ async function checkReservation(utterance) {
   console.log("period:", period);
 
   if (!date || period === null) {
-    return "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약 가능할까요?";
+    return {
+      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약 가능할까요?",
+      shouldSave: false,
+      date: null,
+      time: null
+    };
   }
 
   const response = await fetch(CSV_URL);
@@ -156,21 +161,40 @@ async function checkReservation(utterance) {
   const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
 
   if (!row) {
-    return "담당자 확인 후 연락드리겠습니다.";
+    return {
+      message: "담당자 확인 후 연락드리겠습니다.",
+      shouldSave: false,
+      date: null,
+      time: null
+    };
   }
 
   const status = (row[period] || "").trim();
 
   if (status === "가능") {
-    await saveReservation(date, `${String(hour).padStart(2, "0")}:00`);
-    return "예약 확정 되셨습니다.";
+    return {
+      message: "예약 확정 되셨습니다.",
+      shouldSave: true,
+      date,
+      time: `${String(hour).padStart(2, "0")}:00`
+    };
   }
 
   if (status === "마감") {
-    return "예약 마감되었습니다.";
+    return {
+      message: "예약 마감되었습니다.",
+      shouldSave: false,
+      date: null,
+      time: null
+    };
   }
 
-  return "담당자 확인 후 연락드리겠습니다.";
+  return {
+    message: "담당자 확인 후 연락드리겠습니다.",
+    shouldSave: false,
+    date: null,
+    time: null
+  };
 }
 
 app.get("/", (req, res) => {
@@ -180,20 +204,32 @@ app.get("/", (req, res) => {
 app.post("/", async (req, res) => {
   try {
     const utterance = req.body?.userRequest?.utterance || "";
-    const message = await checkReservation(utterance);
+    const result = await checkReservation(utterance);
 
+    // 1. 사용자에게 먼저 바로 응답
     res.json({
       version: "2.0",
       template: {
         outputs: [
           {
             simpleText: {
-              text: message,
+              text: result.message,
             },
           },
         ],
       },
     });
+
+    // 2. 응답 후 백그라운드로 기록
+    if (result.shouldSave) {
+      saveReservation(result.date, result.time)
+        .then(() => {
+          console.log("예약 기록 완료:", result.date, result.time);
+        })
+        .catch((err) => {
+          console.error("saveReservation error:", err);
+        });
+    }
   } catch (error) {
     console.error(error);
     res.json({
