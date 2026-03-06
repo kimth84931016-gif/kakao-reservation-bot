@@ -6,19 +6,12 @@ app.use(express.json());
 const CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
-/*
-날짜 정규화
-카카오에서 오는 값 예시
-2026-03-17
-2026-03-17T00:00:00+09:00
-3월 17일
-*/
 function normalizeDate(value) {
   if (!value) return null;
 
   const s = String(value).trim();
 
-  // ISO 형식 앞 10자리만 사용
+  // 2026-03-17 또는 2026-03-17T00:00:00+09:00
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (iso) {
     return `${iso[1]}-${iso[2]}-${iso[3]}`;
@@ -33,18 +26,19 @@ function normalizeDate(value) {
     return `${year}-${month}-${day}`;
   }
 
+  // 17일
+  const dOnly = s.match(/(\d{1,2})\s*일/);
+  if (dOnly) {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(dOnly[1]).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
   return null;
 }
 
-/*
-시간 정규화
-카카오에서 올 수 있는 값
-13
-13:00
-13:00:00
-오후 1시
-13시
-*/
 function normalizeHour(value) {
   if (!value) return null;
 
@@ -54,21 +48,17 @@ function normalizeHour(value) {
   const hm = s.match(/^(\d{1,2}):\d{2}(?::\d{2})?$/);
   if (hm) return parseInt(hm[1], 10);
 
-  // 13시 / 오후 1시
+  // 오후 1시 / 13시
   const h = s.match(/(\d{1,2})\s*시/);
   if (h) {
     let hour = parseInt(h[1], 10);
-
     if (s.includes("오후") && hour < 12) hour += 12;
     if (s.includes("오전") && hour === 12) hour = 0;
-
     return hour;
   }
 
   // 숫자만
-  if (/^\d{1,2}$/.test(s)) {
-    return parseInt(s, 10);
-  }
+  if (/^\d{1,2}$/.test(s)) return parseInt(s, 10);
 
   return null;
 }
@@ -87,7 +77,6 @@ function parseCsv(text) {
 
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(",");
-
     rows.push({
       날짜: (cols[0] || "").trim(),
       오전: (cols[1] || "").trim(),
@@ -98,8 +87,86 @@ function parseCsv(text) {
   return rows;
 }
 
-async function checkReservation(dateValue, timeValue) {
+function extractFromUtterance(utterance) {
+  if (!utterance) return { date: null, time: null };
 
+  const text = String(utterance).trim();
+
+  let date = null;
+  let time = null;
+
+  // 2026년 3월 17일 / 3월 17일 / 17일
+  const ymd = text.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (ymd) {
+    date = `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
+  } else {
+    date = normalizeDate(text);
+  }
+
+  // 13시 / 오후 1시 / 13:00
+  const hhmm = text.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (hhmm) {
+    time = hhmm[1];
+  } else {
+    const h = text.match(/(오전\s*\d{1,2}\s*시|오후\s*\d{1,2}\s*시|\d{1,2}\s*시)/);
+    if (h) {
+      time = h[1];
+    }
+  }
+
+  return { date, time };
+}
+
+function extractDateTime(body) {
+  const params = body?.action?.params || {};
+  const detailParams = body?.action?.detailParams || {};
+  const utterance = body?.userRequest?.utterance || "";
+
+  let date =
+    params.date ||
+    params.sysdate ||
+    detailParams.date?.value ||
+    detailParams.sysdate?.value;
+
+  let time =
+    params.time ||
+    params.systime ||
+    detailParams.time?.value ||
+    detailParams.systime?.value;
+
+  // detailParams 전체를 훑어서 sys.date / sys.time 비슷한 것 찾기
+  for (const key of Object.keys(detailParams)) {
+    const item = detailParams[key];
+    const origin = item?.origin || "";
+    const value = item?.value || "";
+
+    if (!date) {
+      if (String(value).includes("T00:00:00") || String(origin).includes("일")) {
+        date = value || origin;
+      }
+    }
+
+    if (!time) {
+      if (
+        /^\d{1,2}:\d{2}(:\d{2})?$/.test(String(value)) ||
+        String(origin).includes("시")
+      ) {
+        time = value || origin;
+      }
+    }
+  }
+
+  // 그래도 없으면 사용자 문장에서 직접 추출
+  if (!date || !time) {
+    const fromUtterance = extractFromUtterance(utterance);
+    if (!date) date = fromUtterance.date;
+    if (!time) time = fromUtterance.time;
+  }
+
+  return { date, time };
+}
+
+async function checkReservation(dateValue, timeValue) {
   const date = normalizeDate(dateValue);
   const hour = normalizeHour(timeValue);
   const period = getPeriod(hour);
@@ -117,8 +184,6 @@ async function checkReservation(dateValue, timeValue) {
   const response = await fetch(CSV_URL);
   const csvText = await response.text();
   const rows = parseCsv(csvText);
-
-  console.log("rows:", rows);
 
   const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
 
@@ -144,17 +209,14 @@ app.get("/", (req, res) => {
 });
 
 app.post("/", async (req, res) => {
-
   try {
+    console.log("FULL BODY:", JSON.stringify(req.body, null, 2));
 
-    const params = req.body.action?.params || {};
+    const extracted = extractDateTime(req.body);
 
-    console.log("params:", params);
+    console.log("extracted:", extracted);
 
-    const date = params.date;
-    const time = params.time;
-
-    const message = await checkReservation(date, time);
+    const message = await checkReservation(extracted.date, extracted.time);
 
     res.json({
       version: "2.0",
@@ -168,9 +230,7 @@ app.post("/", async (req, res) => {
         ],
       },
     });
-
   } catch (error) {
-
     console.error(error);
 
     res.json({
@@ -185,9 +245,7 @@ app.post("/", async (req, res) => {
         ],
       },
     });
-
   }
-
 });
 
 const PORT = process.env.PORT || 3000;
