@@ -6,30 +6,27 @@ app.use(express.json());
 const CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
-// ===== 유틸 =====
+const WRITE_URL =
+  "https://script.google.com/macros/s/AKfycbz2Ec2FfO_cnkagYdiY1qwK40A8igO4_EJi4Y7kq6jMYlX0J-G7mxImB8GaXadi1Q4/exec";
 
 function normalizeDate(value) {
   if (!value) return null;
   const s = String(value).trim();
 
-  // 2026-03-13 또는 2026-03-13T00:00:00+09:00
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // 2026년 3월 13일
   const ymd = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
   if (ymd) {
     return `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
   }
 
-  // 3월 13일
   const md = s.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
   if (md) {
     const now = new Date();
     return `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
   }
 
-  // 13일
   const dOnly = s.match(/(\d{1,2})\s*일/);
   if (dOnly) {
     const now = new Date();
@@ -43,11 +40,9 @@ function normalizeHour(value) {
   if (!value) return null;
   const s = String(value).trim();
 
-  // 13:00 / 09:00 / 13:00:00
   const hm = s.match(/^(\d{1,2}):\d{2}(?::\d{2})?$/);
   if (hm) return parseInt(hm[1], 10);
 
-  // 오전 9시 / 오후 1시 / 13시 / 09시
   const h = s.match(/(오전|오후)?\s*(\d{1,2})\s*시/);
   if (h) {
     let hour = parseInt(h[2], 10);
@@ -56,7 +51,6 @@ function normalizeHour(value) {
     return hour;
   }
 
-  // 숫자만
   if (/^\d{1,2}$/.test(s)) return parseInt(s, 10);
 
   return null;
@@ -84,15 +78,12 @@ function parseCsv(text) {
   return rows;
 }
 
-// ===== 사용자 문장에서 직접 추출 =====
-
 function extractFromUtterance(utterance) {
   const text = String(utterance || "").trim();
 
   let date = null;
   let time = null;
 
-  // 날짜
   const ymd = text.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
   if (ymd) {
     date = `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
@@ -110,7 +101,6 @@ function extractFromUtterance(utterance) {
     }
   }
 
-  // 시간
   const hhmm = text.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
   if (hhmm) {
     time = hhmm[1];
@@ -122,7 +112,25 @@ function extractFromUtterance(utterance) {
   return { date, time };
 }
 
-// ===== 상태 확인 =====
+async function saveReservation(date, time) {
+  const payload = {
+    date,
+    time,
+    name: "챗봇예약"
+  };
+
+  const response = await fetch(WRITE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+    redirect: "follow"
+  });
+
+  const text = await response.text();
+  console.log("WRITE RESULT:", text);
+}
 
 async function checkReservation(utterance) {
   const extracted = extractFromUtterance(utterance);
@@ -153,13 +161,17 @@ async function checkReservation(utterance) {
 
   const status = (row[period] || "").trim();
 
-  if (status === "가능") return "예약 확정 되셨습니다.";
-  if (status === "마감") return "예약 마감되었습니다.";
+  if (status === "가능") {
+    await saveReservation(date, `${String(hour).padStart(2, "0")}:00`);
+    return "예약 확정 되셨습니다.";
+  }
+
+  if (status === "마감") {
+    return "예약 마감되었습니다.";
+  }
 
   return "담당자 확인 후 연락드리겠습니다.";
 }
-
-// ===== 라우트 =====
 
 app.get("/", (req, res) => {
   res.send("ok");
