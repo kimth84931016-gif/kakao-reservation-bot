@@ -22,9 +22,7 @@ const RESERVATION_CSV_URL =
 /**
  * 3) 이름 매핑 시트 CSV
  *    시트명: 채팅방명 매핑
- *    이제는 가능하면 컬럼을:
- *    USER ID,표시이름
- *    형태로 쓰는 걸 추천
+ *    컬럼 예: USER ID,표시이름
  */
 const MAPPING_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=510794396&single=true&output=csv";
@@ -210,9 +208,6 @@ function detectIntent(utterance) {
   return "unknown";
 }
 
-/**
- * 카카오 사용자 고유 ID 사용
- */
 function getUserId(body) {
   return body?.userRequest?.user?.id || null;
 }
@@ -230,7 +225,7 @@ async function getMappedName(userId) {
   );
 
   if (!found) return null;
-  return String(r["표시이름"] || found["표시이름"] || "").trim() || null;
+  return String(found["표시이름"] || "").trim() || null;
 }
 
 async function findExistingReservation(userId, date) {
@@ -253,8 +248,10 @@ async function findExistingReservation(userId, date) {
 
 async function getAvailability(date, period) {
   const rows = await fetchCsvRows(STATUS_CSV_URL);
+
   const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
   if (!row) return null;
+
   return String(row[period] || "").trim();
 }
 
@@ -307,60 +304,44 @@ async function cancelReservation({ date, userId }) {
   return text;
 }
 
+async function ensureMapping(userId) {
+  const payload = {
+    action: "ensureMapping",
+    userId,
+  };
+
+  console.log("ENSURE MAPPING PAYLOAD:", payload);
+
+  const response = await fetch(WRITE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    redirect: "follow",
+  });
+
+  const text = await response.text();
+  console.log("ENSURE MAPPING RESULT:", text);
+  return text;
+}
+
 /* ---------------------------
  * 비즈니스 로직
  * --------------------------- */
 
-async function handleCheck(utterance) {
+async function handleReserveLike(utterance, userId) {
   const extracted = extractFromUtterance(utterance);
   const date = normalizeDate(extracted.date);
   const hour = normalizeHour(extracted.time);
   const period = getPeriod(hour);
 
-  console.log("CHECK utterance:", utterance);
-  console.log("CHECK extracted:", extracted);
-  console.log("CHECK normalized date:", date);
-  console.log("CHECK hour:", hour);
-  console.log("CHECK period:", period);
-
-  if (!date || period === null) {
-    return {
-      message:
-        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약 가능할까요? / 3월 13일 13시 예약 가능할까요?",
-    };
-  }
-
-  const status = await getAvailability(date, period);
-
-  if (status === "가능") {
-    return {
-      message: "예약 확정되셨습니다.",
-    };
-  }
-
-  if (status === "마감") {
-    return {
-      message: "예약 마감되었습니다.",
-    };
-  }
-
-  return {
-    message: "담당자 확인 후 연락드리겠습니다.",
-  };
-}
-
-async function handleReserve(utterance, userId) {
-  const extracted = extractFromUtterance(utterance);
-  const date = normalizeDate(extracted.date);
-  const hour = normalizeHour(extracted.time);
-  const period = getPeriod(hour);
-
-  console.log("RESERVE utterance:", utterance);
-  console.log("RESERVE extracted:", extracted);
-  console.log("RESERVE normalized date:", date);
-  console.log("RESERVE hour:", hour);
-  console.log("RESERVE period:", period);
-  console.log("RESERVE userId:", userId);
+  console.log("RESERVE-LIKE utterance:", utterance);
+  console.log("RESERVE-LIKE extracted:", extracted);
+  console.log("RESERVE-LIKE normalized date:", date);
+  console.log("RESERVE-LIKE hour:", hour);
+  console.log("RESERVE-LIKE period:", period);
+  console.log("RESERVE-LIKE userId:", userId);
 
   if (!userId) {
     return {
@@ -402,7 +383,7 @@ async function handleReserve(utterance, userId) {
   }
 
   const mappedName = await getMappedName(userId);
-  const name = mappedName || "이름미등록";
+  const name = mappedName || "미등록";
 
   return {
     message: "예약 확정되셨습니다.",
@@ -466,12 +447,8 @@ async function processRequest(body) {
     return { intent, ...(await handleCancel(utterance, userId)) };
   }
 
-  if (intent === "check") {
-    return { intent, ...(await handleCheck(utterance)) };
-  }
-
-  if (intent === "reserve") {
-    return { intent, ...(await handleReserve(utterance, userId)) };
+  if (intent === "check" || intent === "reserve") {
+    return { intent, ...(await handleReserveLike(utterance, userId)) };
   }
 
   return {
@@ -490,8 +467,13 @@ app.get("/", (req, res) => {
 
 app.post("/", async (req, res) => {
   try {
-    // 실제 payload 확인할 때만 잠깐 사용
-    // console.log(JSON.stringify(req.body, null, 2));
+    const userId = getUserId(req.body);
+
+    if (userId) {
+      ensureMapping(userId).catch((err) => {
+        console.error("ensureMapping error:", err);
+      });
+    }
 
     const result = await processRequest(req.body);
 
