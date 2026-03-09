@@ -121,6 +121,9 @@ function normalizeHour(value) {
   if (!value) return null;
   const s = String(value).trim();
 
+  if (s === "오전") return 9;
+  if (s === "오후") return 13;
+
   const hm = s.match(/^(\d{1,2}):\d{2}(?::\d{2})?$/);
   if (hm) return parseInt(hm[1], 10);
 
@@ -173,9 +176,24 @@ function extractFromUtterance(utterance) {
   const hhmm = text.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
   if (hhmm) {
     time = hhmm[1];
-  } else {
-    const h = text.match(/(오전|오후)?\s*\d{1,2}\s*시/);
-    if (h) time = h[0];
+    return { date, time };
+  }
+
+  const hourText = text.match(/(오전|오후)?\s*\d{1,2}\s*시/);
+  if (hourText) {
+    time = hourText[0];
+    return { date, time };
+  }
+
+  // "오전 예약", "오후 예약" 같이 시간 숫자 없이 오는 경우
+  if (/오전/.test(text)) {
+    time = "오전";
+    return { date, time };
+  }
+
+  if (/오후/.test(text)) {
+    time = "오후";
+    return { date, time };
   }
 
   return { date, time };
@@ -313,7 +331,7 @@ async function handleCheck(utterance) {
 
   if (!date || period === null) {
     return {
-      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약 가능할까요?",
+      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약 가능할까요? / 3월 13일 13시 예약 가능할까요?",
     };
   }
 
@@ -321,13 +339,13 @@ async function handleCheck(utterance) {
 
   if (status === "가능") {
     return {
-      message: `${date} ${formatHour(hour)} 예약 가능합니다.`,
+      message: "예약 확정되셨습니다.",
     };
   }
 
   if (status === "마감") {
     return {
-      message: `${date} ${formatHour(hour)}은(는) 예약 마감되었습니다.`,
+      message: "예약 마감되었습니다.",
     };
   }
 
@@ -358,12 +376,12 @@ async function handleReserve(utterance, roomName) {
 
   if (!date || period === null) {
     return {
-      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약할게요",
+      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
       shouldSave: false,
     };
   }
 
-  // 하루 1건 제한: 같은 채팅방 + 같은 날짜 + 예약완료 이미 있으면 막기
+  // 하루 1건 제한
   const existing = await findExistingReservation(roomName, date);
   if (existing) {
     return {
@@ -376,7 +394,7 @@ async function handleReserve(utterance, roomName) {
 
   if (status === "마감") {
     return {
-      message: `${date} ${formatHour(hour)}은(는) 예약 마감되었습니다.`,
+      message: "예약 마감되었습니다.",
       shouldSave: false,
     };
   }
@@ -392,7 +410,7 @@ async function handleReserve(utterance, roomName) {
   const name = mappedName || "이름미등록";
 
   return {
-    message: `${date} ${formatHour(hour)} 예약이 확정되었습니다.`,
+    message: "예약 확정되셨습니다.",
     shouldSave: true,
     date,
     time: formatHour(hour),
@@ -477,7 +495,7 @@ app.get("/", (req, res) => {
 
 app.post("/", async (req, res) => {
   try {
-    // 필요하면 처음 1~2회만 켜서 실제 payload 구조 확인
+    // 처음 payload 구조 확인할 때만 잠깐 켜기
     // console.log(JSON.stringify(req.body, null, 2));
 
     const result = await processRequest(req.body);
