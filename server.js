@@ -3,11 +3,92 @@ const app = express();
 
 app.use(express.json());
 
-const CSV_URL =
+/**
+ * 1) 예약 가능 여부 판단 시트 CSV
+ *    시트명: 챗봇상태
+ *    컬럼 예: 날짜,오전,오후
+ */
+const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
+/**
+ * 2) 예약 원본 시트 CSV
+ *    시트명: 예약목록
+ *    컬럼 예: 날짜,시간,이름,채팅방명,상태
+ */
+const RESERVATION_CSV_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=0&single=true&output=csv";
+
+/**
+ * 3) 채팅방명 매핑 시트 CSV
+ *    시트명: 채팅방명 매핑
+ *    컬럼 예: 채팅방명,표시이름
+ */
+const MAPPING_CSV_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=510794396&single=true&output=csv";
+
+/**
+ * 4) Apps Script 웹앱 URL
+ */
 const WRITE_URL =
   "https://script.google.com/macros/s/AKfycbz2Ec2FfO_cnkagYdiY1qwK40A8igO4_EJi4Y7kq6jMYlX0J-G7mxImB8GaXadi1Q4/exec";
+
+/* ---------------------------
+ * 공통 유틸
+ * --------------------------- */
+
+function parseCsvLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
+
+    if (ch === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+
+  result.push(current);
+  return result.map((v) => String(v || "").trim());
+}
+
+function parseCsvWithHeader(text) {
+  const lines = String(text || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvLine(lines[0]);
+  const rows = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvLine(lines[i]);
+    const row = {};
+
+    headers.forEach((header, idx) => {
+      row[header] = (cols[idx] || "").trim();
+    });
+
+    rows.push(row);
+  }
+
+  return rows;
+}
 
 function normalizeDate(value) {
   if (!value) return null;
@@ -62,20 +143,8 @@ function getPeriod(hour) {
   return null;
 }
 
-function parseCsv(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(",");
-    rows.push({
-      날짜: (cols[0] || "").trim(),
-      오전: (cols[1] || "").trim(),
-      오후: (cols[2] || "").trim(),
-    });
-  }
-  return rows;
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
 }
 
 function extractFromUtterance(utterance) {
@@ -112,90 +181,295 @@ function extractFromUtterance(utterance) {
   return { date, time };
 }
 
-async function saveReservation(date, time) {
+function detectIntent(utterance) {
+  const text = String(utterance || "").trim();
+
+  if (/취소/.test(text)) return "cancel";
+  if (/가능|될까요|되나요|있을까요|있나요/.test(text)) return "check";
+  if (/예약/.test(text)) return "reserve";
+
+  return "unknown";
+}
+
+/**
+ * 카카오 요청 payload에서 채팅방명 후보 찾기
+ * 실제 field가 다르면 여기만 수정하면 됨
+ */
+function getRoomName(body) {
+  return (
+    body?.userRequest?.roomName ||
+    body?.userRequest?.chatRoomName ||
+    body?.userRequest?.channel?.name ||
+    body?.action?.clientExtra?.roomName ||
+    body?.context?.roomName ||
+    body?.roomName ||
+    null
+  );
+}
+
+async function fetchCsvRows(url) {
+  const response = await fetch(url);
+  const text = await response.text();
+  return parseCsvWithHeader(text);
+}
+
+async function getMappedName(roomName) {
+  const rows = await fetchCsvRows(MAPPING_CSV_URL);
+  const found = rows.find(
+    (r) => String(r["채팅방명"] || "").trim() === String(roomName || "").trim()
+  );
+
+  if (!found) return null;
+  return String(found["표시이름"] || "").trim() || null;
+}
+
+async function findExistingReservation(roomName, date) {
+  const rows = await fetchCsvRows(RESERVATION_CSV_URL);
+
+  return (
+    rows.find((r) => {
+      const rowDate = normalizeDate(r["날짜"]);
+      const rowRoom = String(r["채팅방명"] || "").trim();
+      const rowStatus = String(r["상태"] || "").trim();
+
+      return (
+        rowRoom === String(roomName || "").trim() &&
+        rowDate === date &&
+        rowStatus === "예약완료"
+      );
+    }) || null
+  );
+}
+
+async function getAvailability(date, period) {
+  const rows = await fetchCsvRows(STATUS_CSV_URL);
+
+  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
+  if (!row) return null;
+
+  return String(row[period] || "").trim();
+}
+
+async function saveReservation({ date, time, roomName, name }) {
   const payload = {
+    action: "reserve",
     date,
     time,
-    name: "챗봇예약"
+    name,
+    roomName,
+    status: "예약완료",
   };
 
   const response = await fetch(WRITE_URL, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
-    redirect: "follow"
+    redirect: "follow",
   });
 
   const text = await response.text();
   console.log("WRITE RESULT:", text);
+  return text;
 }
 
-async function checkReservation(utterance) {
-  const extracted = extractFromUtterance(utterance);
+async function cancelReservation({ date, roomName }) {
+  const payload = {
+    action: "cancel",
+    date,
+    roomName,
+  };
 
+  const response = await fetch(WRITE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    redirect: "follow",
+  });
+
+  const text = await response.text();
+  console.log("CANCEL RESULT:", text);
+  return text;
+}
+
+/* ---------------------------
+ * 비즈니스 로직
+ * --------------------------- */
+
+async function handleCheck(utterance) {
+  const extracted = extractFromUtterance(utterance);
   const date = normalizeDate(extracted.date);
   const hour = normalizeHour(extracted.time);
   const period = getPeriod(hour);
 
-  console.log("utterance:", utterance);
-  console.log("extracted:", extracted);
-  console.log("normalized date:", date);
-  console.log("hour:", hour);
-  console.log("period:", period);
+  console.log("CHECK utterance:", utterance);
+  console.log("CHECK extracted:", extracted);
+  console.log("CHECK normalized date:", date);
+  console.log("CHECK hour:", hour);
+  console.log("CHECK period:", period);
 
   if (!date || period === null) {
     return {
       message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약 가능할까요?",
-      shouldSave: false,
-      date: null,
-      time: null
     };
   }
 
-  const response = await fetch(CSV_URL);
-  const csvText = await response.text();
-  const rows = parseCsv(csvText);
-
-  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-
-  if (!row) {
-    return {
-      message: "담당자 확인 후 연락드리겠습니다.",
-      shouldSave: false,
-      date: null,
-      time: null
-    };
-  }
-
-  const status = (row[period] || "").trim();
+  const status = await getAvailability(date, period);
 
   if (status === "가능") {
     return {
-      message: "예약 확정 되셨습니다.",
-      shouldSave: true,
-      date,
-      time: `${String(hour).padStart(2, "0")}:00`
+      message: `${date} ${formatHour(hour)} 예약 가능합니다.`,
     };
   }
 
   if (status === "마감") {
     return {
-      message: "예약 마감되었습니다.",
-      shouldSave: false,
-      date: null,
-      time: null
+      message: `${date} ${formatHour(hour)}은(는) 예약 마감되었습니다.`,
     };
   }
 
   return {
     message: "담당자 확인 후 연락드리겠습니다.",
-    shouldSave: false,
-    date: null,
-    time: null
   };
 }
+
+async function handleReserve(utterance, roomName) {
+  const extracted = extractFromUtterance(utterance);
+  const date = normalizeDate(extracted.date);
+  const hour = normalizeHour(extracted.time);
+  const period = getPeriod(hour);
+
+  console.log("RESERVE utterance:", utterance);
+  console.log("RESERVE extracted:", extracted);
+  console.log("RESERVE normalized date:", date);
+  console.log("RESERVE hour:", hour);
+  console.log("RESERVE period:", period);
+  console.log("RESERVE roomName:", roomName);
+
+  if (!roomName) {
+    return {
+      message: "채팅방 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      shouldSave: false,
+    };
+  }
+
+  if (!date || period === null) {
+    return {
+      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 13시 예약할게요",
+      shouldSave: false,
+    };
+  }
+
+  // 하루 1건 제한: 같은 채팅방 + 같은 날짜 + 예약완료 이미 있으면 막기
+  const existing = await findExistingReservation(roomName, date);
+  if (existing) {
+    return {
+      message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
+      shouldSave: false,
+    };
+  }
+
+  const status = await getAvailability(date, period);
+
+  if (status === "마감") {
+    return {
+      message: `${date} ${formatHour(hour)}은(는) 예약 마감되었습니다.`,
+      shouldSave: false,
+    };
+  }
+
+  if (status !== "가능") {
+    return {
+      message: "담당자 확인 후 연락드리겠습니다.",
+      shouldSave: false,
+    };
+  }
+
+  const mappedName = await getMappedName(roomName);
+  const name = mappedName || "이름미등록";
+
+  return {
+    message: `${date} ${formatHour(hour)} 예약이 확정되었습니다.`,
+    shouldSave: true,
+    date,
+    time: formatHour(hour),
+    roomName,
+    name,
+  };
+}
+
+async function handleCancel(utterance, roomName) {
+  const extracted = extractFromUtterance(utterance);
+  const date = normalizeDate(extracted.date);
+
+  console.log("CANCEL utterance:", utterance);
+  console.log("CANCEL extracted:", extracted);
+  console.log("CANCEL normalized date:", date);
+  console.log("CANCEL roomName:", roomName);
+
+  if (!roomName) {
+    return {
+      message: "채팅방 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      shouldCancel: false,
+    };
+  }
+
+  if (!date) {
+    return {
+      message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요",
+      shouldCancel: false,
+    };
+  }
+
+  const existing = await findExistingReservation(roomName, date);
+
+  if (!existing) {
+    return {
+      message: `${date}에 취소할 예약이 없습니다.`,
+      shouldCancel: false,
+    };
+  }
+
+  return {
+    message: `${date} 예약이 취소되었습니다.`,
+    shouldCancel: true,
+    date,
+    roomName,
+  };
+}
+
+async function processRequest(body) {
+  const utterance = body?.userRequest?.utterance || "";
+  const roomName = getRoomName(body);
+  const intent = detectIntent(utterance);
+
+  console.log("intent:", intent);
+  console.log("roomName:", roomName);
+
+  if (intent === "cancel") {
+    return { intent, ...(await handleCancel(utterance, roomName)) };
+  }
+
+  if (intent === "check") {
+    return { intent, ...(await handleCheck(utterance)) };
+  }
+
+  if (intent === "reserve") {
+    return { intent, ...(await handleReserve(utterance, roomName)) };
+  }
+
+  return {
+    intent: "unknown",
+    message: "예약 가능 조회, 예약, 취소 중 어떤 요청인지 다시 말씀해 주세요.",
+  };
+}
+
+/* ---------------------------
+ * 라우터
+ * --------------------------- */
 
 app.get("/", (req, res) => {
   res.send("ok");
@@ -203,10 +477,11 @@ app.get("/", (req, res) => {
 
 app.post("/", async (req, res) => {
   try {
-    const utterance = req.body?.userRequest?.utterance || "";
-    const result = await checkReservation(utterance);
+    // 필요하면 처음 1~2회만 켜서 실제 payload 구조 확인
+    // console.log(JSON.stringify(req.body, null, 2));
 
-    // 1. 사용자에게 먼저 바로 응답
+    const result = await processRequest(req.body);
+
     res.json({
       version: "2.0",
       template: {
@@ -220,14 +495,37 @@ app.post("/", async (req, res) => {
       },
     });
 
-    // 2. 응답 후 백그라운드로 기록
     if (result.shouldSave) {
-      saveReservation(result.date, result.time)
+      saveReservation({
+        date: result.date,
+        time: result.time,
+        roomName: result.roomName,
+        name: result.name,
+      })
         .then(() => {
-          console.log("예약 기록 완료:", result.date, result.time);
+          console.log(
+            "예약 기록 완료:",
+            result.date,
+            result.time,
+            result.name,
+            result.roomName
+          );
         })
         .catch((err) => {
           console.error("saveReservation error:", err);
+        });
+    }
+
+    if (result.shouldCancel) {
+      cancelReservation({
+        date: result.date,
+        roomName: result.roomName,
+      })
+        .then(() => {
+          console.log("예약 취소 완료:", result.date, result.roomName);
+        })
+        .catch((err) => {
+          console.error("cancelReservation error:", err);
         });
     }
   } catch (error) {
