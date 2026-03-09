@@ -14,15 +14,17 @@ const STATUS_CSV_URL =
 /**
  * 2) 예약 원본 시트 CSV
  *    시트명: 예약목록
- *    컬럼 예: 날짜,시간,이름,채팅방명,상태
+ *    컬럼 예: 날짜,시간,이름,USER ID,상태
  */
 const RESERVATION_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=0&single=true&output=csv";
 
 /**
- * 3) 채팅방명 매핑 시트 CSV
+ * 3) 이름 매핑 시트 CSV
  *    시트명: 채팅방명 매핑
- *    컬럼 예: 채팅방명,표시이름
+ *    이제는 가능하면 컬럼을:
+ *    USER ID,표시이름
+ *    형태로 쓰는 걸 추천
  */
 const MAPPING_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=510794396&single=true&output=csv";
@@ -185,7 +187,6 @@ function extractFromUtterance(utterance) {
     return { date, time };
   }
 
-  // "오전 예약", "오후 예약" 같이 시간 숫자 없이 오는 경우
   if (/오전/.test(text)) {
     time = "오전";
     return { date, time };
@@ -210,19 +211,10 @@ function detectIntent(utterance) {
 }
 
 /**
- * 카카오 요청 payload에서 채팅방명 후보 찾기
- * 실제 field가 다르면 여기만 수정하면 됨
+ * 카카오 사용자 고유 ID 사용
  */
-function getRoomName(body) {
-  return (
-    body?.userRequest?.roomName ||
-    body?.userRequest?.chatRoomName ||
-    body?.userRequest?.channel?.name ||
-    body?.action?.clientExtra?.roomName ||
-    body?.context?.roomName ||
-    body?.roomName ||
-    null
-  );
+function getUserId(body) {
+  return body?.userRequest?.user?.id || null;
 }
 
 async function fetchCsvRows(url) {
@@ -231,27 +223,27 @@ async function fetchCsvRows(url) {
   return parseCsvWithHeader(text);
 }
 
-async function getMappedName(roomName) {
+async function getMappedName(userId) {
   const rows = await fetchCsvRows(MAPPING_CSV_URL);
   const found = rows.find(
-    (r) => String(r["채팅방명"] || "").trim() === String(roomName || "").trim()
+    (r) => String(r["USER ID"] || "").trim() === String(userId || "").trim()
   );
 
   if (!found) return null;
-  return String(found["표시이름"] || "").trim() || null;
+  return String(r["표시이름"] || found["표시이름"] || "").trim() || null;
 }
 
-async function findExistingReservation(roomName, date) {
+async function findExistingReservation(userId, date) {
   const rows = await fetchCsvRows(RESERVATION_CSV_URL);
 
   return (
     rows.find((r) => {
       const rowDate = normalizeDate(r["날짜"]);
-      const rowRoom = String(r["채팅방명"] || "").trim();
+      const rowUserId = String(r["USER ID"] || "").trim();
       const rowStatus = String(r["상태"] || "").trim();
 
       return (
-        rowRoom === String(roomName || "").trim() &&
+        rowUserId === String(userId || "").trim() &&
         rowDate === date &&
         rowStatus === "예약완료"
       );
@@ -261,22 +253,22 @@ async function findExistingReservation(roomName, date) {
 
 async function getAvailability(date, period) {
   const rows = await fetchCsvRows(STATUS_CSV_URL);
-
   const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
   if (!row) return null;
-
   return String(row[period] || "").trim();
 }
 
-async function saveReservation({ date, time, roomName, name }) {
+async function saveReservation({ date, time, userId, name }) {
   const payload = {
     action: "reserve",
     date,
     time,
     name,
-    roomName,
+    userId,
     status: "예약완료",
   };
+
+  console.log("SAVE PAYLOAD:", payload);
 
   const response = await fetch(WRITE_URL, {
     method: "POST",
@@ -292,12 +284,14 @@ async function saveReservation({ date, time, roomName, name }) {
   return text;
 }
 
-async function cancelReservation({ date, roomName }) {
+async function cancelReservation({ date, userId }) {
   const payload = {
     action: "cancel",
     date,
-    roomName,
+    userId,
   };
+
+  console.log("CANCEL PAYLOAD:", payload);
 
   const response = await fetch(WRITE_URL, {
     method: "POST",
@@ -331,7 +325,8 @@ async function handleCheck(utterance) {
 
   if (!date || period === null) {
     return {
-      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약 가능할까요? / 3월 13일 13시 예약 가능할까요?",
+      message:
+        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약 가능할까요? / 3월 13일 13시 예약 가능할까요?",
     };
   }
 
@@ -354,7 +349,7 @@ async function handleCheck(utterance) {
   };
 }
 
-async function handleReserve(utterance, roomName) {
+async function handleReserve(utterance, userId) {
   const extracted = extractFromUtterance(utterance);
   const date = normalizeDate(extracted.date);
   const hour = normalizeHour(extracted.time);
@@ -365,24 +360,24 @@ async function handleReserve(utterance, roomName) {
   console.log("RESERVE normalized date:", date);
   console.log("RESERVE hour:", hour);
   console.log("RESERVE period:", period);
-  console.log("RESERVE roomName:", roomName);
+  console.log("RESERVE userId:", userId);
 
-  if (!roomName) {
+  if (!userId) {
     return {
-      message: "채팅방 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
       shouldSave: false,
     };
   }
 
   if (!date || period === null) {
     return {
-      message: "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
+      message:
+        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
       shouldSave: false,
     };
   }
 
-  // 하루 1건 제한
-  const existing = await findExistingReservation(roomName, date);
+  const existing = await findExistingReservation(userId, date);
   if (existing) {
     return {
       message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
@@ -406,7 +401,7 @@ async function handleReserve(utterance, roomName) {
     };
   }
 
-  const mappedName = await getMappedName(roomName);
+  const mappedName = await getMappedName(userId);
   const name = mappedName || "이름미등록";
 
   return {
@@ -414,23 +409,23 @@ async function handleReserve(utterance, roomName) {
     shouldSave: true,
     date,
     time: formatHour(hour),
-    roomName,
+    userId,
     name,
   };
 }
 
-async function handleCancel(utterance, roomName) {
+async function handleCancel(utterance, userId) {
   const extracted = extractFromUtterance(utterance);
   const date = normalizeDate(extracted.date);
 
   console.log("CANCEL utterance:", utterance);
   console.log("CANCEL extracted:", extracted);
   console.log("CANCEL normalized date:", date);
-  console.log("CANCEL roomName:", roomName);
+  console.log("CANCEL userId:", userId);
 
-  if (!roomName) {
+  if (!userId) {
     return {
-      message: "채팅방 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
       shouldCancel: false,
     };
   }
@@ -442,7 +437,7 @@ async function handleCancel(utterance, roomName) {
     };
   }
 
-  const existing = await findExistingReservation(roomName, date);
+  const existing = await findExistingReservation(userId, date);
 
   if (!existing) {
     return {
@@ -455,20 +450,20 @@ async function handleCancel(utterance, roomName) {
     message: `${date} 예약이 취소되었습니다.`,
     shouldCancel: true,
     date,
-    roomName,
+    userId,
   };
 }
 
 async function processRequest(body) {
   const utterance = body?.userRequest?.utterance || "";
-  const roomName = getRoomName(body);
+  const userId = getUserId(body);
   const intent = detectIntent(utterance);
 
   console.log("intent:", intent);
-  console.log("roomName:", roomName);
+  console.log("userId:", userId);
 
   if (intent === "cancel") {
-    return { intent, ...(await handleCancel(utterance, roomName)) };
+    return { intent, ...(await handleCancel(utterance, userId)) };
   }
 
   if (intent === "check") {
@@ -476,7 +471,7 @@ async function processRequest(body) {
   }
 
   if (intent === "reserve") {
-    return { intent, ...(await handleReserve(utterance, roomName)) };
+    return { intent, ...(await handleReserve(utterance, userId)) };
   }
 
   return {
@@ -495,7 +490,7 @@ app.get("/", (req, res) => {
 
 app.post("/", async (req, res) => {
   try {
-    // 처음 payload 구조 확인할 때만 잠깐 켜기
+    // 실제 payload 확인할 때만 잠깐 사용
     // console.log(JSON.stringify(req.body, null, 2));
 
     const result = await processRequest(req.body);
@@ -517,7 +512,7 @@ app.post("/", async (req, res) => {
       saveReservation({
         date: result.date,
         time: result.time,
-        roomName: result.roomName,
+        userId: result.userId,
         name: result.name,
       })
         .then(() => {
@@ -526,7 +521,7 @@ app.post("/", async (req, res) => {
             result.date,
             result.time,
             result.name,
-            result.roomName
+            result.userId
           );
         })
         .catch((err) => {
@@ -537,10 +532,10 @@ app.post("/", async (req, res) => {
     if (result.shouldCancel) {
       cancelReservation({
         date: result.date,
-        roomName: result.roomName,
+        userId: result.userId,
       })
         .then(() => {
-          console.log("예약 취소 완료:", result.date, result.roomName);
+          console.log("예약 취소 완료:", result.date, result.userId);
         })
         .catch((err) => {
           console.error("cancelReservation error:", err);
