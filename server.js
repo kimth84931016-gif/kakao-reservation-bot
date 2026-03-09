@@ -218,14 +218,30 @@ async function fetchCsvRows(url) {
   return parseCsvWithHeader(text);
 }
 
+/**
+ * 같은 USER ID가 여러 줄 있어도
+ * 1) 표시이름이 있고
+ * 2) '미등록'이 아닌 값을 우선 사용
+ */
 async function getMappedName(userId) {
   const rows = await fetchCsvRows(MAPPING_CSV_URL);
-  const found = rows.find(
+
+  const matchedRows = rows.filter(
     (r) => String(r["USER ID"] || "").trim() === String(userId || "").trim()
   );
 
-  if (!found) return null;
-  return String(found["표시이름"] || "").trim() || null;
+  if (matchedRows.length === 0) return null;
+
+  const namedRow = matchedRows.find((r) => {
+    const displayName = String(r["표시이름"] || "").trim();
+    return displayName && displayName !== "미등록";
+  });
+
+  if (namedRow) {
+    return String(namedRow["표시이름"] || "").trim();
+  }
+
+  return String(matchedRows[0]["표시이름"] || "").trim() || null;
 }
 
 async function findExistingReservation(userId, date) {
