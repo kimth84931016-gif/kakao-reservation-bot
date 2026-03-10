@@ -3,496 +3,392 @@ const app = express();
 
 app.use(express.json());
 
-/**
- * 예약 가능 여부 판단 시트 CSV
- * 시트명: 챗봇상태
- * 컬럼 예: 날짜,오전,오후
- */
 const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
-/**
- * Apps Script 웹앱 URL
- */
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbwwTP4rR3NUX6eeZjrBY5UAvhj4JeT15jxRxq9hLndE46QX2Y4-JRJEbORjuehWv8c/exec";
-
-/* ---------------------------
- * 공통 유틸
- * --------------------------- */
+  "https://script.google.com/macros/s/AKfycbz2Ec2FfO_cnkagYdiY1qwK40A8igO4_EJi4Y7kq6jMYlX0J-G7mxImB8GaXadi1Q4/exec";
 
 function parseCsvLine(line) {
-  const result = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    const next = line[i + 1];
-
-    if (ch === '"') {
-      if (inQuotes && next === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === "," && !inQuotes) {
-      result.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-
-  result.push(current);
-  return result.map((v) => String(v || "").trim());
+  return line.split(",").map(v => v.trim());
 }
 
 function parseCsvWithHeader(text) {
-  const lines = String(text || "")
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean);
-
-  if (lines.length < 2) return [];
-
+  const lines = text.trim().split("\n");
   const headers = parseCsvLine(lines[0]);
+
   const rows = [];
 
   for (let i = 1; i < lines.length; i++) {
+
     const cols = parseCsvLine(lines[i]);
     const row = {};
 
-    headers.forEach((header, idx) => {
-      row[header] = (cols[idx] || "").trim();
+    headers.forEach((h, idx) => {
+      row[h] = cols[idx];
     });
 
     rows.push(row);
+
   }
 
   return rows;
 }
 
+async function fetchCsvRows(url) {
+
+  const res = await fetch(url);
+  const text = await res.text();
+
+  return parseCsvWithHeader(text);
+
+}
+
 function normalizeDate(value) {
+
   if (!value) return null;
+
   const s = String(value).trim();
 
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  const ymd = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  if (ymd) {
-    return `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
-  }
+  if (iso) return iso[0];
 
   const md = s.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+
   if (md) {
+
     const now = new Date();
-    return `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
+
+    return `${now.getFullYear()}-${String(md[1]).padStart(2,"0")}-${String(md[2]).padStart(2,"0")}`;
+
   }
 
   const dOnly = s.match(/(\d{1,2})\s*일/);
+
   if (dOnly) {
+
     const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(dOnly[1]).padStart(2, "0")}`;
+
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(dOnly[1]).padStart(2,"0")}`;
+
   }
 
   return null;
+
 }
 
 function normalizeHour(value) {
+
   if (!value) return null;
+
   const s = String(value).trim();
 
   if (s === "오전") return 9;
   if (s === "오후") return 13;
 
-  const hm = s.match(/^(\d{1,2}):\d{2}(?::\d{2})?$/);
-  if (hm) return parseInt(hm[1], 10);
+  const h = s.match(/(\d{1,2})/);
 
-  const h = s.match(/(오전|오후)?\s*(\d{1,2})\s*시/);
-  if (h) {
-    let hour = parseInt(h[2], 10);
-    if (h[1] === "오후" && hour < 12) hour += 12;
-    if (h[1] === "오전" && hour === 12) hour = 0;
-    return hour;
-  }
-
-  if (/^\d{1,2}$/.test(s)) return parseInt(s, 10);
+  if (h) return parseInt(h[1]);
 
   return null;
+
 }
 
 function getPeriod(hour) {
+
   if (hour >= 9 && hour <= 11) return "오전";
   if (hour >= 13 && hour <= 16) return "오후";
+
   return null;
+
 }
 
-function formatHour(hour) {
-  return `${String(hour).padStart(2, "0")}:00`;
+function formatHour(hour){
+
+  return `${String(hour).padStart(2,"0")}:00`;
+
 }
 
-function extractFromUtterance(utterance) {
-  const text = String(utterance || "").trim();
+function extractFromUtterance(text){
 
-  let date = null;
-  let time = null;
+  const dateMatch = text.match(/(\d{1,2})\s*일/);
+  const hourMatch = text.match(/(\d{1,2})\s*시/);
 
-  const ymd = text.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  if (ymd) {
-    date = `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
-  } else {
-    const md = text.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-    if (md) {
-      const now = new Date();
-      date = `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
-    } else {
-      const dOnly = text.match(/(\d{1,2})\s*일/);
-      if (dOnly) {
-        const now = new Date();
-        date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(dOnly[1]).padStart(2, "0")}`;
-      }
-    }
-  }
+  return {
 
-  const hhmm = text.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
-  if (hhmm) {
-    time = hhmm[1];
-    return { date, time };
-  }
+    date: dateMatch ? dateMatch[0] : null,
+    time: hourMatch ? hourMatch[0] : null
 
-  const hourText = text.match(/(오전|오후)?\s*\d{1,2}\s*시/);
-  if (hourText) {
-    time = hourText[0];
-    return { date, time };
-  }
+  };
 
-  if (/오전/.test(text)) {
-    time = "오전";
-    return { date, time };
-  }
-
-  if (/오후/.test(text)) {
-    time = "오후";
-    return { date, time };
-  }
-
-  return { date, time };
 }
 
-function detectIntent(utterance) {
-  const text = String(utterance || "").trim();
+function extractMultipleDates(text){
 
-  if (/취소/.test(text)) return "cancel";
-  if (/가능|될까요|되나요|있을까요|있나요/.test(text)) return "check";
-  if (/예약/.test(text)) return "reserve";
+  const matches = [...text.matchAll(/(\d{1,2})\s*일/g)];
+
+  const now = new Date();
+
+  return matches.map(m => {
+
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+
+  });
+
+}
+
+function getThisWeekDates(){
+
+  const today = new Date();
+  const dates = [];
+
+  for(let i=0;i<7;i++){
+
+    const d = new Date(today);
+    d.setDate(today.getDate()+i);
+
+    dates.push(d.toISOString().slice(0,10));
+
+  }
+
+  return dates;
+
+}
+
+function detectIntent(text){
+
+  if(/취소/.test(text)) return "cancel";
+
+  if(/이번주/.test(text)) return "week";
+
+  if(/가능|남는 시간|가능한 날/.test(text) && /\d+일.*\d+일/.test(text)) return "multi";
+
+  if(/예약/.test(text)) return "reserve";
 
   return "unknown";
+
 }
 
-function getUserId(body) {
-  return body?.userRequest?.user?.id || null;
-}
+async function callScript(payload){
 
-async function fetchCsvRows(url) {
-  const response = await fetch(url);
-  const text = await response.text();
-  return parseCsvWithHeader(text);
-}
-
-async function callScript(payload) {
-  const response = await fetch(WRITE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    redirect: "follow",
+  const res = await fetch(WRITE_URL,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(payload)
   });
 
-  const text = await response.text();
-  console.log("SCRIPT RAW RESULT:", text);
+  return res.json();
 
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    return {
-      ok: false,
-      message: "Apps Script 응답 파싱 실패",
-      raw: text,
-    };
-  }
 }
 
-async function ensureMapping(userId) {
+async function getMappedName(userId){
+
+  const r = await callScript({
+    action:"getName",
+    userId
+  });
+
+  if(!r.ok) return null;
+
+  return r.name;
+
+}
+
+async function ensureMapping(userId){
+
   return callScript({
-    action: "ensureMapping",
-    userId,
-  });
-}
-
-async function getMappedName(userId) {
-  const result = await callScript({
-    action: "getName",
-    userId,
+    action:"ensureMapping",
+    userId
   });
 
-  if (!result.ok) return null;
-  return String(result.name || "").trim() || null;
 }
 
-async function findExistingReservation(userId, date) {
-  const result = await callScript({
-    action: "findReservation",
+async function findExistingReservation(userId,date){
+
+  const r = await callScript({
+    action:"findReservation",
     userId,
-    date,
+    date
   });
 
-  if (!result.ok) return null;
-  return result.found ? result.row || { found: true } : null;
+  if(!r.ok) return null;
+
+  return r.found;
+
 }
 
-async function saveReservation({ date, time, userId, name }) {
+async function saveReservation({date,time,userId,name}){
+
   return callScript({
-    action: "reserve",
+    action:"reserve",
     date,
     time,
-    name,
     userId,
-    status: "예약완료",
+    name
   });
+
 }
 
-async function cancelReservation({ date, userId }) {
+async function cancelReservation({date,userId}){
+
   return callScript({
-    action: "cancel",
+    action:"cancel",
     date,
-    userId,
+    userId
   });
+
 }
 
-async function getAvailability(date, period) {
+async function getAvailability(date,period){
+
   const rows = await fetchCsvRows(STATUS_CSV_URL);
 
-  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-  if (!row) return null;
+  const row = rows.find(r => normalizeDate(r["날짜"]) === date);
 
-  return String(row[period] || "").trim();
+  if(!row) return null;
+
+  return row[period];
+
 }
 
-/* ---------------------------
- * 비즈니스 로직
- * --------------------------- */
+async function getAvailableSlots(dates){
 
-async function handleReserveLike(utterance, userId) {
-  const extracted = extractFromUtterance(utterance);
-  const date = normalizeDate(extracted.date);
-  const hour = normalizeHour(extracted.time);
-  const period = getPeriod(hour);
+  const rows = await fetchCsvRows(STATUS_CSV_URL);
 
-  console.log("RESERVE-LIKE utterance:", utterance);
-  console.log("RESERVE-LIKE extracted:", extracted);
-  console.log("RESERVE-LIKE normalized date:", date);
-  console.log("RESERVE-LIKE hour:", hour);
-  console.log("RESERVE-LIKE period:", period);
-  console.log("RESERVE-LIKE userId:", userId);
+  const result = [];
 
-  if (!userId) {
-    return {
-      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      shouldSave: false,
-    };
+  for(const date of dates){
+
+    const row = rows.find(r => normalizeDate(r["날짜"]) === date);
+
+    if(!row) continue;
+
+    const slots=[];
+
+    if(row["오전"]==="가능") slots.push("오전");
+    if(row["오후"]==="가능") slots.push("오후");
+
+    if(slots.length>0){
+
+      result.push(`${date} (${slots.join(", ")})`);
+
+    }
+
   }
 
-  if (!date || period === null) {
-    return {
-      message:
-        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
-      shouldSave: false,
-    };
+  if(result.length===0){
+
+    return "현재 예약 가능한 시간이 없습니다.";
+
   }
 
-  const existing = await findExistingReservation(userId, date);
-  if (existing) {
-    return {
-      message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
-      shouldSave: false,
-    };
-  }
+  return `예약 가능한 시간\n\n${result.join("\n")}`;
 
-  const status = await getAvailability(date, period);
-
-  if (status === "마감") {
-    return {
-      message: "예약 마감되었습니다.",
-      shouldSave: false,
-    };
-  }
-
-  if (status !== "가능") {
-    return {
-      message: "담당자 확인 후 연락드리겠습니다.",
-      shouldSave: false,
-    };
-  }
-
-  const mappedName = await getMappedName(userId);
-  const name = mappedName || "미등록";
-
-  return {
-    message: "예약 확정되셨습니다.",
-    shouldSave: true,
-    date,
-    time: formatHour(hour),
-    userId,
-    name,
-  };
 }
 
-async function handleCancel(utterance, userId) {
-  const extracted = extractFromUtterance(utterance);
-  const date = normalizeDate(extracted.date);
+async function processRequest(body){
 
-  console.log("CANCEL utterance:", utterance);
-  console.log("CANCEL extracted:", extracted);
-  console.log("CANCEL normalized date:", date);
-  console.log("CANCEL userId:", userId);
+  const utterance = body.userRequest.utterance;
+  const userId = body.userRequest.user.id;
 
-  if (!userId) {
-    return {
-      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      shouldCancel: false,
-    };
-  }
-
-  if (!date) {
-    return {
-      message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요",
-      shouldCancel: false,
-    };
-  }
-
-  const existing = await findExistingReservation(userId, date);
-
-  if (!existing) {
-    return {
-      message: `${date}에 취소할 예약이 없습니다.`,
-      shouldCancel: false,
-    };
-  }
-
-  return {
-    message: `${date} 예약이 취소되었습니다.`,
-    shouldCancel: true,
-    date,
-    userId,
-  };
-}
-
-async function processRequest(body) {
-  const utterance = body?.userRequest?.utterance || "";
-  const userId = getUserId(body);
   const intent = detectIntent(utterance);
 
-  console.log("intent:", intent);
-  console.log("userId:", userId);
+  if(intent==="multi"){
 
-  if (intent === "cancel") {
-    return { intent, ...(await handleCancel(utterance, userId)) };
+    const dates = extractMultipleDates(utterance);
+
+    const message = await getAvailableSlots(dates);
+
+    return {message};
+
   }
 
-  if (intent === "check" || intent === "reserve") {
-    return { intent, ...(await handleReserveLike(utterance, userId)) };
+  if(intent==="week"){
+
+    const dates = getThisWeekDates();
+
+    const message = await getAvailableSlots(dates);
+
+    return {message};
+
   }
 
-  return {
-    intent: "unknown",
-    message: "예약 가능 조회, 예약, 취소 중 어떤 요청인지 다시 말씀해 주세요.",
-  };
+  if(intent==="cancel"){
+
+    const {date} = extractFromUtterance(utterance);
+
+    const d = normalizeDate(date);
+
+    await cancelReservation({date:d,userId});
+
+    return {message:`${d} 예약이 취소되었습니다.`};
+
+  }
+
+  if(intent==="reserve"){
+
+    const {date,time} = extractFromUtterance(utterance);
+
+    const d = normalizeDate(date);
+    const hour = normalizeHour(time);
+
+    const period = getPeriod(hour);
+
+    const exist = await findExistingReservation(userId,d);
+
+    if(exist){
+
+      return {message:`${d} 이미 예약이 있습니다.`};
+
+    }
+
+    const status = await getAvailability(d,period);
+
+    if(status!=="가능"){
+
+      return {message:"예약 마감되었습니다."};
+
+    }
+
+    const name = await getMappedName(userId) || "미등록";
+
+    await saveReservation({
+      date:d,
+      time:formatHour(hour),
+      userId,
+      name
+    });
+
+    return {message:"예약 확정 되셨습니다."};
+
+  }
+
+  return {message:"다시 말씀해 주세요."};
+
 }
 
-/* ---------------------------
- * 라우터
- * --------------------------- */
+app.post("/",async(req,res)=>{
 
-app.get("/", (req, res) => {
-  res.send("ok");
+  const userId = req.body.userRequest.user.id;
+
+  ensureMapping(userId);
+
+  const result = await processRequest(req.body);
+
+  res.json({
+    version:"2.0",
+    template:{
+      outputs:[
+        {
+          simpleText:{
+            text:result.message
+          }
+        }
+      ]
+    }
+  });
+
 });
 
-app.post("/", async (req, res) => {
-  try {
-    const userId = getUserId(req.body);
-
-    if (userId) {
-      ensureMapping(userId).catch((err) => {
-        console.error("ensureMapping error:", err);
-      });
-    }
-
-    const result = await processRequest(req.body);
-
-    res.json({
-      version: "2.0",
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text: result.message,
-            },
-          },
-        ],
-      },
-    });
-
-    if (result.shouldSave) {
-      saveReservation({
-        date: result.date,
-        time: result.time,
-        userId: result.userId,
-        name: result.name,
-      })
-        .then((scriptResult) => {
-          console.log("예약 기록 완료:", result.date, result.time, result.name, result.userId);
-          console.log("예약 저장 응답:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("saveReservation error:", err);
-        });
-    }
-
-    if (result.shouldCancel) {
-      cancelReservation({
-        date: result.date,
-        userId: result.userId,
-      })
-        .then((scriptResult) => {
-          console.log("예약 취소 완료:", result.date, result.userId);
-          console.log("예약 취소 응답:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("cancelReservation error:", err);
-        });
-    }
-  } catch (error) {
-    console.error(error);
-    res.json({
-      version: "2.0",
-      template: {
-        outputs: [
-          {
-            simpleText: {
-              text: "담당자 확인 후 연락드리겠습니다.",
-            },
-          },
-        ],
-      },
-    });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("server start");
-});
+app.listen(process.env.PORT || 3000);
