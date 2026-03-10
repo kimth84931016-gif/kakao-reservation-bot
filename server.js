@@ -15,7 +15,7 @@ const STATUS_CSV_URL =
  * Apps Script 웹앱 URL
  */
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbz2Ec2FfO_cnkagYdiY1qwK40A8igO4_EJi4Y7kq6jMYlX0J-G7mxImB8GaXadi1Q4/exec";
+  "https://script.google.com/macros/s/AKfycbwwTP4rR3NUX6eeZjrBY5UAvhj4JeT15jxRxq9hLndE46QX2Y4-JRJEbORjuehWv8c/exec";
 
 /* ---------------------------
  * 공통 유틸
