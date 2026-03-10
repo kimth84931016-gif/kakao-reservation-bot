@@ -4,31 +4,15 @@ const app = express();
 app.use(express.json());
 
 /**
- * 1) 예약 가능 여부 판단 시트 CSV
- *    시트명: 챗봇상태
- *    컬럼 예: 날짜,오전,오후
+ * 예약 가능 여부 판단 시트 CSV
+ * 시트명: 챗봇상태
+ * 컬럼 예: 날짜,오전,오후
  */
 const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 /**
- * 2) 예약 원본 시트 CSV
- *    시트명: 예약목록
- *    컬럼 예: 날짜,시간,이름,USER ID,상태
- */
-const RESERVATION_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=0&single=true&output=csv";
-
-/**
- * 3) 이름 매핑 시트 CSV
- *    시트명: 채팅방명 매핑
- *    컬럼 예: USER ID,표시이름
- */
-const MAPPING_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=510794396&single=true&output=csv";
-
-/**
- * 4) Apps Script 웹앱 URL
+ * Apps Script 웹앱 URL
  */
 const WRITE_URL =
   "https://script.google.com/macros/s/AKfycbz2Ec2FfO_cnkagYdiY1qwK40A8igO4_EJi4Y7kq6jMYlX0J-G7mxImB8GaXadi1Q4/exec";
@@ -218,48 +202,75 @@ async function fetchCsvRows(url) {
   return parseCsvWithHeader(text);
 }
 
-/**
- * 같은 USER ID가 여러 줄 있어도
- * 1) 표시이름이 있고
- * 2) '미등록'이 아닌 값을 우선 사용
- */
-async function getMappedName(userId) {
-  const rows = await fetchCsvRows(MAPPING_CSV_URL);
-
-  const matchedRows = rows.filter(
-    (r) => String(r["USER ID"] || "").trim() === String(userId || "").trim()
-  );
-
-  if (matchedRows.length === 0) return null;
-
-  const namedRow = matchedRows.find((r) => {
-    const displayName = String(r["표시이름"] || "").trim();
-    return displayName && displayName !== "미등록";
+async function callScript(payload) {
+  const response = await fetch(WRITE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    redirect: "follow",
   });
 
-  if (namedRow) {
-    return String(namedRow["표시이름"] || "").trim();
-  }
+  const text = await response.text();
+  console.log("SCRIPT RAW RESULT:", text);
 
-  return String(matchedRows[0]["표시이름"] || "").trim() || null;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    return {
+      ok: false,
+      message: "Apps Script 응답 파싱 실패",
+      raw: text,
+    };
+  }
+}
+
+async function ensureMapping(userId) {
+  return callScript({
+    action: "ensureMapping",
+    userId,
+  });
+}
+
+async function getMappedName(userId) {
+  const result = await callScript({
+    action: "getName",
+    userId,
+  });
+
+  if (!result.ok) return null;
+  return String(result.name || "").trim() || null;
 }
 
 async function findExistingReservation(userId, date) {
-  const rows = await fetchCsvRows(RESERVATION_CSV_URL);
+  const result = await callScript({
+    action: "findReservation",
+    userId,
+    date,
+  });
 
-  return (
-    rows.find((r) => {
-      const rowDate = normalizeDate(r["날짜"]);
-      const rowUserId = String(r["USER ID"] || "").trim();
-      const rowStatus = String(r["상태"] || "").trim();
+  if (!result.ok) return null;
+  return result.found ? result.row || { found: true } : null;
+}
 
-      return (
-        rowUserId === String(userId || "").trim() &&
-        rowDate === date &&
-        rowStatus === "예약완료"
-      );
-    }) || null
-  );
+async function saveReservation({ date, time, userId, name }) {
+  return callScript({
+    action: "reserve",
+    date,
+    time,
+    name,
+    userId,
+    status: "예약완료",
+  });
+}
+
+async function cancelReservation({ date, userId }) {
+  return callScript({
+    action: "cancel",
+    date,
+    userId,
+  });
 }
 
 async function getAvailability(date, period) {
@@ -269,77 +280,6 @@ async function getAvailability(date, period) {
   if (!row) return null;
 
   return String(row[period] || "").trim();
-}
-
-async function saveReservation({ date, time, userId, name }) {
-  const payload = {
-    action: "reserve",
-    date,
-    time,
-    name,
-    userId,
-    status: "예약완료",
-  };
-
-  console.log("SAVE PAYLOAD:", payload);
-
-  const response = await fetch(WRITE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    redirect: "follow",
-  });
-
-  const text = await response.text();
-  console.log("WRITE RESULT:", text);
-  return text;
-}
-
-async function cancelReservation({ date, userId }) {
-  const payload = {
-    action: "cancel",
-    date,
-    userId,
-  };
-
-  console.log("CANCEL PAYLOAD:", payload);
-
-  const response = await fetch(WRITE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    redirect: "follow",
-  });
-
-  const text = await response.text();
-  console.log("CANCEL RESULT:", text);
-  return text;
-}
-
-async function ensureMapping(userId) {
-  const payload = {
-    action: "ensureMapping",
-    userId,
-  };
-
-  console.log("ENSURE MAPPING PAYLOAD:", payload);
-
-  const response = await fetch(WRITE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    redirect: "follow",
-  });
-
-  const text = await response.text();
-  console.log("ENSURE MAPPING RESULT:", text);
-  return text;
 }
 
 /* ---------------------------
@@ -513,14 +453,9 @@ app.post("/", async (req, res) => {
         userId: result.userId,
         name: result.name,
       })
-        .then(() => {
-          console.log(
-            "예약 기록 완료:",
-            result.date,
-            result.time,
-            result.name,
-            result.userId
-          );
+        .then((scriptResult) => {
+          console.log("예약 기록 완료:", result.date, result.time, result.name, result.userId);
+          console.log("예약 저장 응답:", scriptResult);
         })
         .catch((err) => {
           console.error("saveReservation error:", err);
@@ -532,8 +467,9 @@ app.post("/", async (req, res) => {
         date: result.date,
         userId: result.userId,
       })
-        .then(() => {
+        .then((scriptResult) => {
           console.log("예약 취소 완료:", result.date, result.userId);
+          console.log("예약 취소 응답:", scriptResult);
         })
         .catch((err) => {
           console.error("cancelReservation error:", err);
