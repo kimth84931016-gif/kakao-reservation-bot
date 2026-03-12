@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbwRRrZyyRO4SK7Frp0KajKdOZ-7t05DN73lIxLILdy-sZyC14g14kHzOl2_oG0lHwoZ/exec";
+  "https://script.google.com/macros/s/AKfycbyiCWKewmo2kZZbsz63UqaLPRdyihRk0iBwN7z846ufA1r64NelsT74UryTQ5DPhic_/exec";
 
 /* ---------------------------
  * 공통 유틸
