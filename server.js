@@ -4,7 +4,7 @@ const app = express();
 app.use(express.json());
 
 const STATUS_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
+  "https://script.google.com/macros/s/AKfycbxNzjKCiDcgjz4pwzvO3T-JNJD8jVBDlJ54BJZGU8tMCLMTkluQbLA0z6YumuGRTPIh/exec";
 
 const WRITE_URL =
   "https://script.google.com/macros/s/AKfycbyiCWKewmo2kZZbsz63UqaLPRdyihRk0iBwN7z846ufA1r64NelsT74UryTQ5DPhic_/exec";
