@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbwKJWD-YjGWkFDnY06oz2g3LG63pUVGJ2QvQP8ftSTdDajlPsWo59qKPqKuMK-CE0C0/exec";
+  "https://script.google.com/macros/s/AKfycbw0KdB4yZkttnsZSyRvbbiPVmybE1W7lNxSj4WNoS_leBDMYAFellhy8Q59l2v5SDyU/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -90,9 +90,11 @@ function parseCsvWithHeader(text) {
   return lines.slice(1).map((line) => {
     const cols = parseCsvLine(line);
     const row = {};
+
     headers.forEach((header, idx) => {
       row[header] = (cols[idx] || "").trim();
     });
+
     return row;
   });
 }
@@ -116,19 +118,13 @@ function normalizeDate(value) {
   if (m) return s;
 
   m = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  if (m) {
-    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
-  }
+  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
 
   m = s.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  if (m) {
-    return `${now.getFullYear()}-${pad(m[1])}-${pad(m[2])}`;
-  }
+  if (m) return `${now.getFullYear()}-${pad(m[1])}-${pad(m[2])}`;
 
   m = s.match(/(?:^|\s)(\d{1,2})\s*일(?:\s|$)/);
-  if (m) {
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(m[1])}`;
-  }
+  if (m) return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(m[1])}`;
 
   return null;
 }
@@ -267,9 +263,7 @@ async function callScript(payload) {
   try {
     const response = await fetch(WRITE_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       redirect: "follow",
     });
@@ -279,7 +273,7 @@ async function callScript(payload) {
 
     try {
       return JSON.parse(text);
-    } catch (err) {
+    } catch {
       return {
         ok: false,
         message: "Apps Script가 JSON이 아닌 응답을 반환했습니다.",
@@ -296,31 +290,13 @@ async function callScript(payload) {
 }
 
 async function ensureMapping(userId) {
-  return callScript({
-    action: "ensureMapping",
-    userId,
-  });
+  return callScript({ action: "ensureMapping", userId });
 }
 
 async function getMappedName(userId) {
-  const result = await callScript({
-    action: "getName",
-    userId,
-  });
-
+  const result = await callScript({ action: "getName", userId });
   if (!result.ok) return null;
   return String(result.name || "").trim() || null;
-}
-
-async function findExistingReservation(userId, date) {
-  const result = await callScript({
-    action: "findReservation",
-    userId,
-    date,
-  });
-
-  if (!result.ok) return null;
-  return result.found ? result.row || { found: true } : null;
 }
 
 async function saveReservation({ date, time, userId, name }) {
@@ -389,22 +365,15 @@ async function getAvailableSlots(dates) {
 }
 
 async function getSingleDateSlots(date) {
-  if (!date) {
-    return "날짜를 다시 말씀해 주세요. 예: 13일 가능한 시간";
-  }
+  if (!date) return "날짜를 다시 말씀해 주세요. 예: 13일 가능한 시간";
 
   const map = await getRowsByDate();
   const row = map[date];
 
-  if (!row) {
-    return "해당 날짜의 예약 정보를 찾지 못했습니다.";
-  }
+  if (!row) return "해당 날짜의 예약 정보를 찾지 못했습니다.";
 
   const slots = getAvailablePeriods(row);
-
-  if (slots.length === 0) {
-    return `${date}에는 예약 가능한 시간이 없습니다.`;
-  }
+  if (slots.length === 0) return `${date}에는 예약 가능한 시간이 없습니다.`;
 
   return `${date} 예약 가능한 시간은 ${slots.join(", ")} 입니다.`;
 }
@@ -428,22 +397,12 @@ async function handleReserveLike(utterance, userId) {
     console.log("RESERVE userId:", userId);
 
     if (!userId) {
-      return {
-        message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      };
+      return { message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다." };
     }
 
     if (!date || period === null) {
       return {
-        message:
-          "날짜와 시간을 정확히 말씀해 주세요. 예: 13일 오전 예약 / 13일 13시 예약",
-      };
-    }
-
-    const existing = await findExistingReservation(userId, date);
-    if (existing) {
-      return {
-        message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
+        message: "날짜와 시간을 정확히 말씀해 주세요. 예: 13일 오전 예약 / 13일 13시 예약",
       };
     }
 
@@ -460,19 +419,23 @@ async function handleReserveLike(utterance, userId) {
     const mappedName = await getMappedName(userId);
     const name = mappedName || "미등록";
 
-    return {
-      message: "예약 확정되셨습니다.",
-      shouldSave: true,
+    const saved = await saveReservation({
       date,
       time: formatHour(hour),
       userId,
       name,
-    };
+    });
+
+    if (!saved.ok) {
+      return {
+        message: saved.message || "예약 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
+      };
+    }
+
+    return { message: "예약 확정되셨습니다." };
   } catch (err) {
     console.error("handleReserveLike error:", err);
-    return {
-      message: "예약 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
-    };
+    return { message: "예약 처리 중 오류가 발생했습니다. 다시 시도해 주세요." };
   }
 }
 
@@ -487,36 +450,25 @@ async function handleCancel(utterance, userId) {
     console.log("CANCEL userId:", userId);
 
     if (!userId) {
-      return {
-        message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      };
+      return { message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다." };
     }
 
     if (!date) {
+      return { message: "취소할 날짜를 함께 말씀해 주세요. 예: 13일 예약 취소" };
+    }
+
+    const canceled = await cancelReservation({ date, userId });
+
+    if (!canceled.ok) {
       return {
-        message: "취소할 날짜를 함께 말씀해 주세요. 예: 13일 예약 취소",
+        message: canceled.message || "취소 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
       };
     }
 
-    const existing = await findExistingReservation(userId, date);
-
-    if (!existing) {
-      return {
-        message: `${date}에 취소할 예약이 없습니다.`,
-      };
-    }
-
-    return {
-      message: `${date} 예약이 취소되었습니다.`,
-      shouldCancel: true,
-      date,
-      userId,
-    };
+    return { message: `${date} 예약이 취소되었습니다.` };
   } catch (err) {
     console.error("handleCancel error:", err);
-    return {
-      message: "취소 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
-    };
+    return { message: "취소 처리 중 오류가 발생했습니다. 다시 시도해 주세요." };
   }
 }
 
@@ -532,20 +484,15 @@ async function processRequest(body) {
   if (intent === "single_day_slots") {
     const extracted = extractDateTime(utterance);
     const date = normalizeDate(extracted.date);
-    const message = await getSingleDateSlots(date);
-    return { message };
+    return { message: await getSingleDateSlots(date) };
   }
 
   if (intent === "multi") {
-    const dates = extractMultipleDates(utterance);
-    const message = await getAvailableSlots(dates);
-    return { message };
+    return { message: await getAvailableSlots(extractMultipleDates(utterance)) };
   }
 
   if (intent === "week") {
-    const dates = getThisWeekDates();
-    const message = await getAvailableSlots(dates);
-    return { message };
+    return { message: await getAvailableSlots(getThisWeekDates()) };
   }
 
   if (intent === "cancel") {
@@ -556,9 +503,7 @@ async function processRequest(body) {
     return await handleReserveLike(utterance, userId);
   }
 
-  return {
-    message: "다시 말씀해 주세요.",
-  };
+  return { message: "다시 말씀해 주세요." };
 }
 
 /* ---------------------------
@@ -580,43 +525,10 @@ app.post("/", async (req, res) => {
     }
 
     const result = await processRequest(req.body);
-
-    if (result.shouldSave) {
-      const saved = await saveReservation({
-        date: result.date,
-        time: result.time,
-        userId: result.userId,
-        name: result.name,
-      });
-
-      if (!saved.ok) {
-        console.error("saveReservation fail:", saved);
-        return res.json(
-          kakaoResponse("예약 처리 중 오류가 발생했습니다. 다시 시도해 주세요.")
-        );
-      }
-    }
-
-    if (result.shouldCancel) {
-      const canceled = await cancelReservation({
-        date: result.date,
-        userId: result.userId,
-      });
-
-      if (!canceled.ok) {
-        console.error("cancelReservation fail:", canceled);
-        return res.json(
-          kakaoResponse("취소 처리 중 오류가 발생했습니다. 다시 시도해 주세요.")
-        );
-      }
-    }
-
     return res.json(kakaoResponse(result.message));
   } catch (error) {
     console.error("POST / error:", error);
-    return res.json(
-      kakaoResponse("담당자 확인 후 연락드리겠습니다.")
-    );
+    return res.json(kakaoResponse("담당자 확인 후 연락드리겠습니다."));
   }
 });
 
