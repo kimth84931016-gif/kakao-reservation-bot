@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbzrMX7W3022N9o4LgfkCYNCrm4QqyaCQsP8OGYQ-3sTKs_WhA4-8E0eM7LVA3DZpvLA/exec";
+  "https://script.google.com/macros/s/AKfycbw-7Qh5QkmOYR17A6cH35pGxO4gL2P0Mo2iHfZrClzHiNgPz-nQmH8ukuf7MQy5Z1SP/exec";
 
 /* -------------------- 공통 -------------------- */
 
