@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbyjLxGjV7G4gLYAn7udcgE1gp--jj3tcMLraCLRiN_H5NUSjXvLdimRG4rHT_IGuuoZ/exec";
+  "https://script.google.com/macros/s/AKfycbwdKQZMOGXcGvuCahgCYN8m5bkUO0xfv_ocMKMdhOFqIpQWtuMoKHJICWBKKk_Yvfgx/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -206,7 +206,6 @@ function detectIntent(text) {
   const utterance = String(text || "").trim();
 
   if (/취소/.test(utterance)) return "cancel";
-
   if (/이번주/.test(utterance)) return "week";
 
   if (/남는 시간|가능한 시간대|예약 가능한 시간/.test(utterance) && /\d{1,2}일/.test(utterance)) {
@@ -459,7 +458,7 @@ async function handleCancel(utterance, userId) {
   }
 
   return {
-    message: `${date} 예약이 취소되었습니다.`,
+    message: `${date} 예약 취소 요청이 접수되었습니다.`,
     shouldCancel: true,
     date,
     userId,
@@ -547,14 +546,7 @@ app.post("/", async (req, res) => {
         name: result.name,
       })
         .then((scriptResult) => {
-          console.log(
-            "예약 기록 완료:",
-            result.date,
-            result.time,
-            result.name,
-            result.userId
-          );
-          console.log("예약 저장 응답:", scriptResult);
+          console.log("예약 기록 완료:", scriptResult);
         })
         .catch((err) => {
           console.error("saveReservation error:", err);
@@ -567,8 +559,7 @@ app.post("/", async (req, res) => {
         userId: result.userId,
       })
         .then((scriptResult) => {
-          console.log("예약 취소 완료:", result.date, result.userId);
-          console.log("예약 취소 응답:", scriptResult);
+          console.log("예약 취소 처리 결과:", scriptResult);
         })
         .catch((err) => {
           console.error("cancelReservation error:", err);
