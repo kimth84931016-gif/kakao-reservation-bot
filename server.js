@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbwdKQZMOGXcGvuCahgCYN8m5bkUO0xfv_ocMKMdhOFqIpQWtuMoKHJICWBKKk_Yvfgx/exec";
+  "https://script.google.com/macros/s/AKfycbyFcCdPmV-5J4rOvf-pWXL54cLpQiSKH8u48zG1stwTepeCNq1V8kedzkBgS3o-5fTx/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -260,16 +260,6 @@ async function ensureMapping(userId) {
   });
 }
 
-async function getMappedName(userId) {
-  const result = await callScript({
-    action: "getName",
-    userId,
-  });
-
-  if (!result.ok) return null;
-  return String(result.name || "").trim() || null;
-}
-
 async function findExistingReservation(userId, date) {
   const result = await callScript({
     action: "findReservation",
@@ -388,41 +378,46 @@ async function handleReserveLike(utterance, userId) {
     };
   }
 
-  const existing = await findExistingReservation(userId, date);
-  if (existing) {
+  try {
+    const existing = await findExistingReservation(userId, date);
+    if (existing) {
+      return {
+        message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
+        shouldSave: false,
+      };
+    }
+
+    const status = await getAvailability(date, period);
+
+    if (status === "마감") {
+      return {
+        message: "예약 마감되었습니다.",
+        shouldSave: false,
+      };
+    }
+
+    if (status !== "가능") {
+      return {
+        message: "담당자 확인 후 연락드리겠습니다.",
+        shouldSave: false,
+      };
+    }
+
     return {
-      message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
-      shouldSave: false,
+      message: "예약 확정되셨습니다.",
+      shouldSave: true,
+      date,
+      time: formatHour(hour),
+      userId,
+      name: "미등록",
     };
-  }
-
-  const status = await getAvailability(date, period);
-
-  if (status === "마감") {
-    return {
-      message: "예약 마감되었습니다.",
-      shouldSave: false,
-    };
-  }
-
-  if (status !== "가능") {
+  } catch (err) {
+    console.error("handleReserveLike error:", err);
     return {
       message: "담당자 확인 후 연락드리겠습니다.",
       shouldSave: false,
     };
   }
-
-  const mappedName = await getMappedName(userId);
-  const name = mappedName || "미등록";
-
-  return {
-    message: "예약 확정되셨습니다.",
-    shouldSave: true,
-    date,
-    time: formatHour(hour),
-    userId,
-    name,
-  };
 }
 
 async function handleCancel(utterance, userId) {
@@ -458,7 +453,7 @@ async function handleCancel(utterance, userId) {
   }
 
   return {
-    message: `${date} 예약 취소 요청이 접수되었습니다.`,
+    message: `${date} 예약 취소되셨습니다.`,
     shouldCancel: true,
     date,
     userId,
