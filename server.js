@@ -73,16 +73,36 @@ function jsonResponse(text) {
   };
 }
 
+/* ---------------------------
+ * 의도 판별
+ * --------------------------- */
+
 function isCancelIntent(text) {
-  return /취소/.test(text);
+  const t = safeString(text);
+
+  return (
+    /(예약\s*취소|취소\s*가능|취소\s*해|취소\s*할게|취소\s*하고|예약.*취소|취소.*예약)/.test(t)
+  );
 }
 
 function isReserveIntent(text) {
-  return /예약/.test(text);
+  const t = safeString(text);
+
+  if (isCancelIntent(t)) return false;
+
+  return (
+    /(예약\s*가능|예약\s*할\s*수\s*있|예약\s*되나요|예약\s*될까요|예약\s*부탁|예약\s*해줘|예약\s*해주세요|예약하고\s*싶|예약할게|예약할래|예약하고\s*싶어요|예약\s*원해|예약\s*신청)/.test(t)
+  );
 }
 
+/* ---------------------------
+ * 날짜/시간 파싱
+ * --------------------------- */
+
 function getKstNow() {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" }));
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" })
+  );
 }
 
 function formatDateYYYYMMDD(date) {
@@ -116,7 +136,10 @@ function extractDateTime(utterance) {
       } else {
         m = text.match(/(\d{1,2})일/);
         if (m) {
-          date = `${now.getFullYear()}-${("0" + (now.getMonth() + 1)).slice(-2)}-${("0" + m[1]).slice(-2)}`;
+          date =
+            `${now.getFullYear()}-` +
+            `${("0" + (now.getMonth() + 1)).slice(-2)}-` +
+            `${("0" + m[1]).slice(-2)}`;
         }
       }
     }
@@ -205,13 +228,6 @@ async function ensureMapping(userId) {
   });
 }
 
-async function getName(userId) {
-  return await postToScript({
-    action: "getName",
-    userId
-  });
-}
-
 async function findReservation(date, userId) {
   return await postToScript({
     action: "findReservation",
@@ -220,12 +236,12 @@ async function findReservation(date, userId) {
   });
 }
 
-async function reserve(date, time, name, userId) {
+async function reserve(date, time, userId) {
   return await postToScript({
     action: "reserve",
     date,
     time,
-    name,
+    name: "미등록",
     userId,
     status: "예약완료"
   });
@@ -265,15 +281,33 @@ async function handleWebhook(req, res) {
     });
 
     if (!utterance || !userId) {
+      const replyText = "요청 정보를 확인할 수 없습니다.";
+
       fireAndForgetLog({
-        logAction: "validation",
+        logAction: "reply",
         userId,
-        result: "fail",
+        result: "sent",
         datetime: "",
-        memo: "utterance 또는 userId 누락"
+        memo: replyText
       });
 
-      return res.json(jsonResponse("요청 정보를 확인할 수 없습니다."));
+      return res.json(jsonResponse(replyText));
+    }
+
+    const cancelIntent = isCancelIntent(utterance);
+    const reserveIntent = isReserveIntent(utterance);
+
+    fireAndForgetLog({
+      logAction: "intent",
+      userId,
+      result: cancelIntent ? "cancel" : reserveIntent ? "reserve" : "ignore",
+      datetime: "",
+      memo: utterance
+    });
+
+    /* 예약/취소가 아니면 여기서 바로 종료 */
+    if (!reserveIntent && !cancelIntent) {
+      return res.json(jsonResponse("이해하기 어려워요"));
     }
 
     const parsed = extractDateTime(utterance);
@@ -283,8 +317,11 @@ async function handleWebhook(req, res) {
     fireAndForgetLog({
       logAction: "extract",
       userId,
-      result: parsed.date && parsed.time ? "parsed" : "fail",
-      datetime: parsed.date && parsed.time ? `${parsed.date} ${parsed.time}` : "",
+      result: parsed.date && (parsed.time || cancelIntent) ? "parsed" : "fail",
+      datetime:
+        parsed.date && parsed.time
+          ? `${parsed.date} ${parsed.time}`
+          : parsed.date,
       memo: JSON.stringify(parsed)
     });
 
@@ -302,7 +339,10 @@ async function handleWebhook(req, res) {
       return res.json(jsonResponse(replyText));
     }
 
-    if (isReserveIntent(utterance) && !isCancelIntent(utterance)) {
+    /* ---------------------------
+     * 예약 처리
+     * --------------------------- */
+    if (reserveIntent) {
       if (!parsed.time) {
         const replyText = "시간을 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
 
@@ -325,17 +365,6 @@ async function handleWebhook(req, res) {
         datetime: parsed.date,
         memo: JSON.stringify(ensureResult)
       });
-
-      const nameResult = await getName(userId);
-      fireAndForgetLog({
-        logAction: "getName",
-        userId,
-        result: nameResult.ok ? "success" : "fail",
-        datetime: parsed.date,
-        memo: JSON.stringify(nameResult)
-      });
-
-      const displayName = safeString(nameResult.name) || "미등록";
 
       const foundResult = await findReservation(parsed.date, userId);
       fireAndForgetLog({
@@ -361,7 +390,7 @@ async function handleWebhook(req, res) {
         return res.json(jsonResponse(replyText));
       }
 
-      const reserveResult = await reserve(parsed.date, parsed.time, displayName, userId);
+      const reserveResult = await reserve(parsed.date, parsed.time, userId);
       fireAndForgetLog({
         logAction: "reserve_result",
         userId,
@@ -370,21 +399,9 @@ async function handleWebhook(req, res) {
         memo: JSON.stringify(reserveResult)
       });
 
-      if (reserveResult.ok) {
-        const replyText = "예약 확정되었습니다.";
-
-        fireAndForgetLog({
-          logAction: "reply",
-          userId,
-          result: "sent",
-          datetime: `${parsed.date} ${parsed.time}`,
-          memo: replyText
-        });
-
-        return res.json(jsonResponse(replyText));
-      }
-
-      const replyText = reserveResult.message || "예약 처리 중 문제가 발생했습니다.";
+      const replyText = reserveResult.ok
+        ? "예약 확정되었습니다."
+        : (reserveResult.message || "예약 처리 중 문제가 발생했습니다.");
 
       fireAndForgetLog({
         logAction: "reply",
@@ -397,7 +414,10 @@ async function handleWebhook(req, res) {
       return res.json(jsonResponse(replyText));
     }
 
-    if (isCancelIntent(utterance)) {
+    /* ---------------------------
+     * 취소 처리
+     * --------------------------- */
+    if (cancelIntent) {
       const foundResult = await findReservation(parsed.date, userId);
       fireAndForgetLog({
         logAction: "findReservation_cancel",
@@ -445,17 +465,7 @@ async function handleWebhook(req, res) {
       return res.json(jsonResponse(replyText));
     }
 
-    const fallback = "이해하기 어려워요";
-
-    fireAndForgetLog({
-      logAction: "reply",
-      userId,
-      result: "sent",
-      datetime: "",
-      memo: fallback
-    });
-
-    return res.json(jsonResponse(fallback));
+    return res.json(jsonResponse("이해하기 어려워요"));
   } catch (err) {
     console.error("webhook error:", err);
     return res.json(jsonResponse("처리 중 오류가 발생했습니다."));
