@@ -200,13 +200,15 @@ function getUserId(body) {
 }
 
 function buildKakaoResponse(text) {
+  const safeText = text == null || text === "" ? "\u200B" : text;
+
   return {
     version: "2.0",
     template: {
       outputs: [
         {
           simpleText: {
-            text,
+            text: safeText,
           },
         },
       ],
@@ -272,7 +274,7 @@ function writeReplyLog(userId, message, datetime = "") {
     userId,
     result: "sent",
     datetime,
-    memo: message,
+    memo: message || "[무응답]",
   });
 }
 
@@ -529,7 +531,7 @@ async function processRequest(body) {
   }
 
   return {
-    message: "예약/취소 요청만 가능합니다.",
+    message: "",
   };
 }
 
