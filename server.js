@@ -9,7 +9,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbyI2bLRMzsLz-5cBTFdy_Hapb7NdzKOS6H1CaealHDFztnaULyQPLW2K23NeMQBjY6V/exec";
+  "https://script.google.com/macros/s/AKfycbzKVE2CBSyN98RVrysVi5BlD9p2G8TSJIhl1uLmCkaly5omHlkW9p_gaeeND8L2WNqG/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -17,10 +17,6 @@ const WRITE_URL =
 
 function safeString(v) {
   return String(v || "").trim();
-}
-
-function nowKstString() {
-  return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Seoul" }).replace(" ", " ");
 }
 
 function parseCsvLine(line) {
@@ -190,42 +186,10 @@ function extractFromUtterance(text) {
   return { date, time };
 }
 
-function extractMultipleDates(text) {
-  const matches = [...String(text || "").matchAll(/(\d{1,2})\s*일/g)];
-  const now = new Date();
-
-  return matches.map((m) => {
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  });
-}
-
-function getThisWeekDates() {
-  const today = new Date();
-  const dates = [];
-
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates;
-}
-
 function detectIntent(text) {
   const utterance = String(text || "").trim();
 
   if (/취소/.test(utterance)) return "cancel";
-  if (/이번주/.test(utterance)) return "week";
-
-  if (/남는 시간|가능한 시간대|예약 가능한 시간/.test(utterance) && /\d{1,2}일/.test(utterance)) {
-    return "single_day_slots";
-  }
-
-  if (/가능|남는 시간|가능한 날/.test(utterance) && /\d+일.*\d+일/.test(utterance)) {
-    return "multi";
-  }
-
   if (/예약/.test(utterance)) return "reserve";
 
   return "unknown";
@@ -364,49 +328,6 @@ async function getAvailability(date, period) {
   if (!row) return null;
 
   return String(row[period] || "").trim();
-}
-
-async function getAvailableSlots(dates) {
-  const rows = await fetchCsvRows(STATUS_CSV_URL);
-  const result = [];
-
-  for (const date of dates) {
-    const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-    if (!row) continue;
-
-    const slots = [];
-    if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
-    if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
-
-    if (slots.length > 0) {
-      result.push(`${date} (${slots.join(", ")})`);
-    }
-  }
-
-  if (result.length === 0) {
-    return "현재 예약 가능한 시간이 없습니다.";
-  }
-
-  return `예약 가능한 시간\n\n${result.join("\n")}`;
-}
-
-async function getSingleDateSlots(date) {
-  const rows = await fetchCsvRows(STATUS_CSV_URL);
-  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-
-  if (!row) {
-    return "해당 날짜의 예약 정보를 찾지 못했습니다.";
-  }
-
-  const slots = [];
-  if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
-  if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
-
-  if (slots.length === 0) {
-    return `${date}에는 예약 가능한 시간이 없습니다.`;
-  }
-
-  return `${date} 예약 가능한 시간은 ${slots.join(", ")} 입니다.`;
 }
 
 /* ---------------------------
@@ -599,52 +520,6 @@ async function processRequest(body) {
     memo: utterance,
   });
 
-  if (intent === "single_day_slots") {
-    const extracted = extractFromUtterance(utterance);
-    const date = normalizeDate(extracted.date);
-    const message = await getSingleDateSlots(date);
-
-    writeRenderLog({
-      action: "single_day_slots",
-      userId,
-      result: "done",
-      datetime: date || "",
-      memo: message,
-    });
-
-    return { message };
-  }
-
-  if (intent === "multi") {
-    const dates = extractMultipleDates(utterance);
-    const message = await getAvailableSlots(dates);
-
-    writeRenderLog({
-      action: "multi_slots",
-      userId,
-      result: "done",
-      datetime: dates.join(", "),
-      memo: message,
-    });
-
-    return { message };
-  }
-
-  if (intent === "week") {
-    const dates = getThisWeekDates();
-    const message = await getAvailableSlots(dates);
-
-    writeRenderLog({
-      action: "week_slots",
-      userId,
-      result: "done",
-      datetime: dates[0] || "",
-      memo: message,
-    });
-
-    return { message };
-  }
-
   if (intent === "cancel") {
     return { intent, ...(await handleCancel(utterance, userId)) };
   }
@@ -654,7 +529,7 @@ async function processRequest(body) {
   }
 
   return {
-    message: "다시 말씀해 주세요.",
+    message: "예약/취소 요청만 가능합니다.",
   };
 }
 
@@ -666,7 +541,7 @@ app.get("/", (req, res) => {
   res.send("ok");
 });
 
-app.post("/", async (req, res) => {
+async function handleWebhook(req, res) {
   try {
     const utterance = req.body?.userRequest?.utterance || "";
     const userId = getUserId(req.body);
@@ -786,7 +661,10 @@ app.post("/", async (req, res) => {
       buildKakaoResponse("담당자 확인 후 연락드리겠습니다.")
     );
   }
-});
+}
+
+app.post("/", handleWebhook);
+app.post("/webhook", handleWebhook);
 
 app.listen(PORT, () => {
   console.log("server start");
