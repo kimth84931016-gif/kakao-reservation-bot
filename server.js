@@ -196,15 +196,13 @@ function getUserId(body) {
 }
 
 function buildKakaoResponse(text) {
-  const safeText = text == null || text === "" ? "\u200B" : text;
-
   return {
     version: "2.0",
     template: {
       outputs: [
         {
           simpleText: {
-            text: safeText,
+            text: String(text || ""),
           },
         },
       ],
@@ -421,8 +419,75 @@ async function processRequest(body) {
   }
 
   return {
-    message: "",
+    intent: "unknown",
+    noReply: true,
   };
+}
+
+/* ---------------------------
+ * 공통 핸들러
+ * --------------------------- */
+
+async function handleWebhook(req, res) {
+  try {
+    const utterance = req.body?.userRequest?.utterance || "";
+    const intent = detectIntent(utterance);
+
+    console.log("incoming utterance:", utterance);
+    console.log("detected intent:", intent);
+
+    // 예약/취소 외에는 아무 응답도 보내지 않음
+    if (intent === "unknown") {
+      return res.status(204).end();
+    }
+
+    const userId = getUserId(req.body);
+
+    if (userId) {
+      ensureMapping(userId).catch((err) => {
+        console.error("ensureMapping error:", err);
+      });
+    }
+
+    const result = await processRequest(req.body);
+
+    if (result.noReply) {
+      return res.status(204).end();
+    }
+
+    res.json(buildKakaoResponse(result.message));
+
+    if (result.shouldSave) {
+      saveReservation({
+        date: result.date,
+        time: result.time,
+        userId: result.userId,
+        name: result.name,
+      })
+        .then((scriptResult) => {
+          console.log("예약 기록 완료:", scriptResult);
+        })
+        .catch((err) => {
+          console.error("saveReservation error:", err);
+        });
+    }
+
+    if (result.shouldCancel) {
+      cancelReservation({
+        date: result.date,
+        userId: result.userId,
+      })
+        .then((scriptResult) => {
+          console.log("예약 취소 처리 결과:", scriptResult);
+        })
+        .catch((err) => {
+          console.error("cancelReservation error:", err);
+        });
+    }
+  } catch (error) {
+    console.error("handleWebhook error:", error);
+    return res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
+  }
 }
 
 /* ---------------------------
@@ -433,100 +498,9 @@ app.get("/", (req, res) => {
   res.send("ok");
 });
 
-app.post("/", async (req, res) => {
-  try {
-    const userId = getUserId(req.body);
-
-    if (userId) {
-      ensureMapping(userId).catch((err) => {
-        console.error("ensureMapping error:", err);
-      });
-    }
-
-    const result = await processRequest(req.body);
-
-    res.json(buildKakaoResponse(result.message));
-
-    if (result.shouldSave) {
-      saveReservation({
-        date: result.date,
-        time: result.time,
-        userId: result.userId,
-        name: result.name,
-      })
-        .then((scriptResult) => {
-          console.log("예약 기록 완료:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("saveReservation error:", err);
-        });
-    }
-
-    if (result.shouldCancel) {
-      cancelReservation({
-        date: result.date,
-        userId: result.userId,
-      })
-        .then((scriptResult) => {
-          console.log("예약 취소 처리 결과:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("cancelReservation error:", err);
-        });
-    }
-  } catch (error) {
-    console.error(error);
-    res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
-  }
-});
-
-app.post("/webhook", async (req, res) => {
-  try {
-    const userId = getUserId(req.body);
-
-    if (userId) {
-      ensureMapping(userId).catch((err) => {
-        console.error("ensureMapping error:", err);
-      });
-    }
-
-    const result = await processRequest(req.body);
-
-    res.json(buildKakaoResponse(result.message));
-
-    if (result.shouldSave) {
-      saveReservation({
-        date: result.date,
-        time: result.time,
-        userId: result.userId,
-        name: result.name,
-      })
-        .then((scriptResult) => {
-          console.log("예약 기록 완료:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("saveReservation error:", err);
-        });
-    }
-
-    if (result.shouldCancel) {
-      cancelReservation({
-        date: result.date,
-        userId: result.userId,
-      })
-        .then((scriptResult) => {
-          console.log("예약 취소 처리 결과:", scriptResult);
-        })
-        .catch((err) => {
-          console.error("cancelReservation error:", err);
-        });
-    }
-  } catch (error) {
-    console.error(error);
-    res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
-  }
-});
+app.post("/", handleWebhook);
+app.post("/webhook", handleWebhook);
 
 app.listen(PORT, () => {
-  console.log("server start");
+  console.log(`server start on ${PORT}`);
 });
