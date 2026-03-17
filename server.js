@@ -7,7 +7,7 @@ const STATUS_CSV_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbzKVE2CBSyN98RVrysVi5BlD9p2G8TSJIhl1uLmCkaly5omHlkW9p_gaeeND8L2WNqG/exec";
+  "https://script.google.com/macros/s/AKfycbyZiKV7m58fpvKj7oO3EzASFKpUtbE6zl_B2XGkS-3AHlpx6dKo7DNwOMfyC9udWh_5/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -180,44 +180,16 @@ function extractFromUtterance(text) {
   return { date, time };
 }
 
-function extractMultipleDates(text) {
-  const matches = [...String(text || "").matchAll(/(\d{1,2})\s*일/g)];
-  const now = new Date();
-
-  return matches.map((m) => {
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  });
-}
-
-function getThisWeekDates() {
-  const today = new Date();
-  const dates = [];
-
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates;
-}
-
 function detectIntent(text) {
   const utterance = String(text || "").trim();
 
-  if (/취소/.test(utterance)) return "cancel";
-  if (/이번주/.test(utterance)) return "week";
+  // 취소가 먼저
+  if (/예약\s*취소|취소/.test(utterance)) return "cancel";
 
-  if (/남는 시간|가능한 시간대|예약 가능한 시간/.test(utterance) && /\d{1,2}일/.test(utterance)) {
-    return "single_day_slots";
-  }
+  // 예약 관련 표현
+  if (/예약|신청/.test(utterance)) return "reserve";
 
-  if (/가능|남는 시간|가능한 날/.test(utterance) && /\d+일.*\d+일/.test(utterance)) {
-    return "multi";
-  }
-
-  if (/예약/.test(utterance)) return "reserve";
-
+  // 그 외는 전부 무응답
   return "unknown";
 }
 
@@ -301,49 +273,6 @@ async function getAvailability(date, period) {
   if (!row) return null;
 
   return String(row[period] || "").trim();
-}
-
-async function getAvailableSlots(dates) {
-  const rows = await fetchCsvRows(STATUS_CSV_URL);
-  const result = [];
-
-  for (const date of dates) {
-    const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-    if (!row) continue;
-
-    const slots = [];
-    if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
-    if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
-
-    if (slots.length > 0) {
-      result.push(`${date} (${slots.join(", ")})`);
-    }
-  }
-
-  if (result.length === 0) {
-    return "현재 예약 가능한 시간이 없습니다.";
-  }
-
-  return `예약 가능한 시간\n\n${result.join("\n")}`;
-}
-
-async function getSingleDateSlots(date) {
-  const rows = await fetchCsvRows(STATUS_CSV_URL);
-  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-
-  if (!row) {
-    return "해당 날짜의 예약 정보를 찾지 못했습니다.";
-  }
-
-  const slots = [];
-  if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
-  if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
-
-  if (slots.length === 0) {
-    return `${date}에는 예약 가능한 시간이 없습니다.`;
-  }
-
-  return `${date} 예약 가능한 시간은 ${slots.join(", ")} 입니다.`;
 }
 
 /* ---------------------------
@@ -465,27 +394,9 @@ async function processRequest(body) {
   const userId = getUserId(body);
   const intent = detectIntent(utterance);
 
+  console.log("utterance:", utterance);
   console.log("intent:", intent);
   console.log("userId:", userId);
-
-  if (intent === "single_day_slots") {
-    const extracted = extractFromUtterance(utterance);
-    const date = normalizeDate(extracted.date);
-    const message = await getSingleDateSlots(date);
-    return { message };
-  }
-
-  if (intent === "multi") {
-    const dates = extractMultipleDates(utterance);
-    const message = await getAvailableSlots(dates);
-    return { message };
-  }
-
-  if (intent === "week") {
-    const dates = getThisWeekDates();
-    const message = await getAvailableSlots(dates);
-    return { message };
-  }
 
   if (intent === "cancel") {
     return { intent, ...(await handleCancel(utterance, userId)) };
@@ -496,7 +407,7 @@ async function processRequest(body) {
   }
 
   return {
-    message: "다시 말씀해 주세요.",
+    silent: true,
   };
 }
 
@@ -519,6 +430,16 @@ app.post("/", async (req, res) => {
     }
 
     const result = await processRequest(req.body);
+
+    // 예약/취소 외에는 완전 무응답
+    if (result.silent) {
+      return res.json({
+        version: "2.0",
+        template: {
+          outputs: [],
+        },
+      });
+    }
 
     res.json({
       version: "2.0",
