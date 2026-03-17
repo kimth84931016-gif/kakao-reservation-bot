@@ -81,30 +81,6 @@ function isReserveIntent(text) {
   return /예약/.test(text);
 }
 
-function normalizeTimeString(value) {
-  const s = safeString(value);
-  if (!s) return "";
-
-  let m = s.match(/^(\d{1,2})[:시]\s*(\d{1,2})?분?$/);
-  if (m) {
-    const hh = ("0" + parseInt(m[1], 10)).slice(-2);
-    const mm = ("0" + parseInt(m[2] || "0", 10)).slice(-2);
-    return `${hh}:${mm}`;
-  }
-
-  m = s.match(/^(\d{1,2}):(\d{2})$/);
-  if (m) {
-    return `${("0" + parseInt(m[1], 10)).slice(-2)}:${m[2]}`;
-  }
-
-  m = s.match(/^(\d{1,2})$/);
-  if (m) {
-    return `${("0" + parseInt(m[1], 10)).slice(-2)}:00`;
-  }
-
-  return s;
-}
-
 function getKstNow() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" }));
 }
@@ -171,12 +147,7 @@ function extractDateTime(utterance) {
     }
   }
 
-  return {
-    date,
-    time,
-    hour,
-    period
-  };
+  return { date, time, hour, period };
 }
 
 /* ---------------------------
@@ -211,18 +182,20 @@ async function writeSheetLog({
   datetime = "",
   memo = ""
 }) {
-  try {
-    await postToScript({
-      action: "writeLog",
-      logAction,
-      userId,
-      result,
-      datetime,
-      memo
-    });
-  } catch (err) {
+  return postToScript({
+    action: "writeLog",
+    logAction,
+    userId,
+    result,
+    datetime,
+    memo
+  });
+}
+
+function fireAndForgetLog(payload) {
+  writeSheetLog(payload).catch((err) => {
     console.error("writeSheetLog error:", err.message);
-  }
+  });
 }
 
 async function ensureMapping(userId) {
@@ -283,7 +256,7 @@ async function handleWebhook(req, res) {
     console.log("utterance:", utterance);
     console.log("userId:", userId);
 
-    await writeSheetLog({
+    fireAndForgetLog({
       logAction: "utterance",
       userId,
       result: "received",
@@ -292,7 +265,7 @@ async function handleWebhook(req, res) {
     });
 
     if (!utterance || !userId) {
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "validation",
         userId,
         result: "fail",
@@ -307,7 +280,7 @@ async function handleWebhook(req, res) {
 
     console.log("extracted:", parsed);
 
-    await writeSheetLog({
+    fireAndForgetLog({
       logAction: "extract",
       userId,
       result: parsed.date && parsed.time ? "parsed" : "fail",
@@ -318,7 +291,7 @@ async function handleWebhook(req, res) {
     if (!parsed.date) {
       const replyText = "날짜를 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
 
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "reply",
         userId,
         result: "sent",
@@ -333,7 +306,7 @@ async function handleWebhook(req, res) {
       if (!parsed.time) {
         const replyText = "시간을 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
 
-        await writeSheetLog({
+        fireAndForgetLog({
           logAction: "reply",
           userId,
           result: "sent",
@@ -345,7 +318,7 @@ async function handleWebhook(req, res) {
       }
 
       const ensureResult = await ensureMapping(userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "ensureMapping",
         userId,
         result: ensureResult.ok ? "success" : "fail",
@@ -354,7 +327,7 @@ async function handleWebhook(req, res) {
       });
 
       const nameResult = await getName(userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "getName",
         userId,
         result: nameResult.ok ? "success" : "fail",
@@ -365,7 +338,7 @@ async function handleWebhook(req, res) {
       const displayName = safeString(nameResult.name) || "미등록";
 
       const foundResult = await findReservation(parsed.date, userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "findReservation",
         userId,
         result: foundResult.found ? "found" : "not_found",
@@ -377,7 +350,7 @@ async function handleWebhook(req, res) {
         const replyText =
           `${parsed.date}에는 이미 예약이 있습니다.\n하루에 1건만 예약 가능합니다.`;
 
-        await writeSheetLog({
+        fireAndForgetLog({
           logAction: "reply",
           userId,
           result: "sent",
@@ -389,7 +362,7 @@ async function handleWebhook(req, res) {
       }
 
       const reserveResult = await reserve(parsed.date, parsed.time, displayName, userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "reserve_result",
         userId,
         result: reserveResult.ok ? "success" : "fail",
@@ -400,7 +373,7 @@ async function handleWebhook(req, res) {
       if (reserveResult.ok) {
         const replyText = "예약 확정되었습니다.";
 
-        await writeSheetLog({
+        fireAndForgetLog({
           logAction: "reply",
           userId,
           result: "sent",
@@ -413,7 +386,7 @@ async function handleWebhook(req, res) {
 
       const replyText = reserveResult.message || "예약 처리 중 문제가 발생했습니다.";
 
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "reply",
         userId,
         result: "sent",
@@ -426,7 +399,7 @@ async function handleWebhook(req, res) {
 
     if (isCancelIntent(utterance)) {
       const foundResult = await findReservation(parsed.date, userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "findReservation_cancel",
         userId,
         result: foundResult.found ? "found" : "not_found",
@@ -437,7 +410,7 @@ async function handleWebhook(req, res) {
       if (!foundResult.ok || !foundResult.found) {
         const replyText = "취소할 예약을 찾지 못했습니다.";
 
-        await writeSheetLog({
+        fireAndForgetLog({
           logAction: "reply",
           userId,
           result: "sent",
@@ -449,7 +422,7 @@ async function handleWebhook(req, res) {
       }
 
       const cancelResult = await cancel(parsed.date, userId);
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "cancel_result",
         userId,
         result: cancelResult.ok ? "success" : "fail",
@@ -461,7 +434,7 @@ async function handleWebhook(req, res) {
         ? "예약 취소되셨습니다."
         : (cancelResult.message || "예약 취소 중 문제가 발생했습니다.");
 
-      await writeSheetLog({
+      fireAndForgetLog({
         logAction: "reply",
         userId,
         result: "sent",
@@ -474,7 +447,7 @@ async function handleWebhook(req, res) {
 
     const fallback = "이해하기 어려워요";
 
-    await writeSheetLog({
+    fireAndForgetLog({
       logAction: "reply",
       userId,
       result: "sent",
