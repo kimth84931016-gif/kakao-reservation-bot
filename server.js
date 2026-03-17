@@ -3,478 +3,807 @@ const app = express();
 
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const STATUS_CSV_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
 
 const WRITE_URL =
+  "https://script.google.com/macros/s/AKfycbzKVE2CBSyN98RVrysVi5BlD9p2G8TSJIhl1uLmCkaly5omHlkW9p_gaeeND8L2WNqG/exec";
+
+const LOG_URL =
   "https://script.google.com/macros/s/AKfycbyI2bLRMzsLz-5cBTFdy_Hapb7NdzKOS6H1CaealHDFztnaULyQPLW2K23NeMQBjY6V/exec";
 
 /* ---------------------------
  * 공통 유틸
  * --------------------------- */
 
-function safeString(v) {
-  return String(v || "").trim();
-}
+function parseCsvLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
 
-function getNested(obj, paths) {
-  for (const path of paths) {
-    const parts = path.split(".");
-    let cur = obj;
-    let ok = true;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
 
-    for (const p of parts) {
-      if (cur && Object.prototype.hasOwnProperty.call(cur, p)) {
-        cur = cur[p];
+    if (ch === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i++;
       } else {
-        ok = false;
-        break;
+        inQuotes = !inQuotes;
       }
-    }
-
-    if (ok && cur != null) return cur;
-  }
-  return "";
-}
-
-function extractUtterance(body) {
-  return safeString(
-    getNested(body, [
-      "userRequest.utterance",
-      "utterance",
-      "message",
-      "text"
-    ])
-  );
-}
-
-function extractUserId(body) {
-  return safeString(
-    getNested(body, [
-      "userRequest.user.id",
-      "user.id",
-      "userId",
-      "action.params.userId"
-    ])
-  );
-}
-
-function jsonResponse(text) {
-  return {
-    version: "2.0",
-    template: {
-      outputs: [
-        {
-          simpleText: {
-            text
-          }
-        }
-      ]
-    }
-  };
-}
-
-/* ---------------------------
- * 의도 판별
- * --------------------------- */
-
-function isCancelIntent(text) {
-  const t = safeString(text);
-
-  return (
-    /(예약\s*취소|취소\s*가능|취소\s*해|취소\s*할게|취소\s*하고|예약.*취소|취소.*예약)/.test(t)
-  );
-}
-
-function isReserveIntent(text) {
-  const t = safeString(text);
-
-  if (isCancelIntent(t)) return false;
-
-  return (
-    /(예약\s*가능|예약\s*할\s*수\s*있|예약\s*되나요|예약\s*될까요|예약\s*부탁|예약\s*해줘|예약\s*해주세요|예약하고\s*싶|예약할게|예약할래|예약하고\s*싶어요|예약\s*원해|예약\s*신청)/.test(t)
-  );
-}
-
-/* ---------------------------
- * 날짜/시간 파싱
- * --------------------------- */
-
-function getKstNow() {
-  return new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" })
-  );
-}
-
-function formatDateYYYYMMDD(date) {
-  const y = date.getFullYear();
-  const m = ("0" + (date.getMonth() + 1)).slice(-2);
-  const d = ("0" + date.getDate()).slice(-2);
-  return `${y}-${m}-${d}`;
-}
-
-function extractDateTime(utterance) {
-  const text = safeString(utterance);
-  const now = getKstNow();
-
-  let date = "";
-  let time = "";
-  let hour = null;
-  let period = "";
-
-  if (/내일/.test(text)) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 1);
-    date = formatDateYYYYMMDD(d);
-  } else {
-    let m = text.match(/(\d{4})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?/);
-    if (m) {
-      date = `${m[1]}-${("0" + m[2]).slice(-2)}-${("0" + m[3]).slice(-2)}`;
+    } else if (ch === "," && !inQuotes) {
+      result.push(current);
+      current = "";
     } else {
-      m = text.match(/(\d{1,2})월\s*(\d{1,2})일/);
-      if (m) {
-        date = `${now.getFullYear()}-${("0" + m[1]).slice(-2)}-${("0" + m[2]).slice(-2)}`;
-      } else {
-        m = text.match(/(\d{1,2})일/);
-        if (m) {
-          date =
-            `${now.getFullYear()}-` +
-            `${("0" + (now.getMonth() + 1)).slice(-2)}-` +
-            `${("0" + m[1]).slice(-2)}`;
-        }
+      current += ch;
+    }
+  }
+
+  result.push(current);
+  return result.map((v) => String(v || "").trim());
+}
+
+function parseCsvWithHeader(text) {
+  const lines = String(text || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvLine(lines[0]);
+  const rows = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCsvLine(lines[i]);
+    const row = {};
+
+    headers.forEach((header, idx) => {
+      row[header] = (cols[idx] || "").trim();
+    });
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+async function fetchCsvRows(url) {
+  const res = await fetch(url);
+  const text = await res.text();
+  return parseCsvWithHeader(text);
+}
+
+function normalizeDate(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[0];
+
+  const ymd = s.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (ymd) {
+    return `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
+  }
+
+  const md = s.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (md) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
+  }
+
+  const dOnly = s.match(/(\d{1,2})\s*일/);
+  if (dOnly) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(dOnly[1]).padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
+function normalizeHour(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+
+  if (s === "오전") return 9;
+  if (s === "오후") return 13;
+
+  const hm = s.match(/^(\d{1,2}):\d{2}(?::\d{2})?$/);
+  if (hm) return parseInt(hm[1], 10);
+
+  const h = s.match(/(오전|오후)?\s*(\d{1,2})\s*시/);
+  if (h) {
+    let hour = parseInt(h[2], 10);
+    if (h[1] === "오후" && hour < 12) hour += 12;
+    if (h[1] === "오전" && hour === 12) hour = 0;
+    return hour;
+  }
+
+  if (/^\d{1,2}$/.test(s)) return parseInt(s, 10);
+
+  return null;
+}
+
+function getPeriod(hour) {
+  if (hour >= 9 && hour <= 11) return "오전";
+  if (hour >= 13 && hour <= 16) return "오후";
+  return null;
+}
+
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function extractFromUtterance(text) {
+  const utterance = String(text || "").trim();
+
+  let date = null;
+  let time = null;
+
+  const ymd = utterance.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (ymd) {
+    date = `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
+  } else {
+    const md = utterance.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+    if (md) {
+      const now = new Date();
+      date = `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
+    } else {
+      const dOnly = utterance.match(/(\d{1,2})\s*일/);
+      if (dOnly) {
+        const now = new Date();
+        date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(dOnly[1]).padStart(2, "0")}`;
       }
     }
   }
 
-  if (/오후|PM|pm/.test(text)) period = "오후";
-  if (/오전|AM|am/.test(text)) period = "오전";
-
-  let tm = text.match(/(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분?)?/);
-  if (tm) {
-    hour = parseInt(tm[1], 10);
-    const minute = parseInt(tm[2] || "0", 10);
-
-    if (period === "오후" && hour < 12) hour += 12;
-    if (period === "오전" && hour === 12) hour = 0;
-
-    time = `${("0" + hour).slice(-2)}:${("0" + minute).slice(-2)}`;
-  } else {
-    tm = text.match(/(\d{1,2}):(\d{2})/);
-    if (tm) {
-      hour = parseInt(tm[1], 10);
-      const minute = parseInt(tm[2], 10);
-
-      if (period === "오후" && hour < 12) hour += 12;
-      if (period === "오전" && hour === 12) hour = 0;
-
-      time = `${("0" + hour).slice(-2)}:${("0" + minute).slice(-2)}`;
-    }
+  const hhmm = utterance.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (hhmm) {
+    time = hhmm[1];
+    return { date, time };
   }
 
-  return { date, time, hour, period };
+  const hourText = utterance.match(/(오전|오후)?\s*\d{1,2}\s*시/);
+  if (hourText) {
+    time = hourText[0];
+    return { date, time };
+  }
+
+  if (/오전/.test(utterance)) {
+    time = "오전";
+    return { date, time };
+  }
+
+  if (/오후/.test(utterance)) {
+    time = "오후";
+    return { date, time };
+  }
+
+  return { date, time };
+}
+
+function extractMultipleDates(text) {
+  const matches = [...String(text || "").matchAll(/(\d{1,2})\s*일/g)];
+  const now = new Date();
+
+  return matches.map((m) => {
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  });
+}
+
+function getThisWeekDates() {
+  const today = new Date();
+  const dates = [];
+
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  return dates;
+}
+
+function detectIntent(text) {
+  const utterance = String(text || "").trim();
+
+  if (/취소/.test(utterance)) return "cancel";
+  if (/이번주/.test(utterance)) return "week";
+
+  if (/남는 시간|가능한 시간대|예약 가능한 시간/.test(utterance) && /\d{1,2}일/.test(utterance)) {
+    return "single_day_slots";
+  }
+
+  if (/가능|남는 시간|가능한 날/.test(utterance) && /\d+일.*\d+일/.test(utterance)) {
+    return "multi";
+  }
+
+  if (/예약/.test(utterance)) return "reserve";
+
+  return "unknown";
+}
+
+function getUserId(body) {
+  return body?.userRequest?.user?.id || null;
+}
+
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+
+/* ---------------------------
+ * Render 로그 -> 시트 기록
+ * --------------------------- */
+
+async function sendLogToSheet({
+  level = "INFO",
+  event = "",
+  message = "",
+  userId = "",
+  utterance = "",
+  data = null,
+}) {
+  try {
+    const payload = {
+      action: "log",
+      level,
+      event,
+      message,
+      userId,
+      utterance,
+      data: safeStringify(data),
+      source: "render",
+      timestamp: new Date().toISOString(),
+    };
+
+    const response = await fetch(LOG_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+    });
+
+    const text = await response.text();
+    console.log("LOG SCRIPT RESULT:", text);
+  } catch (err) {
+    console.error("sendLogToSheet error:", err);
+  }
+}
+
+function writeInfoLog(event, options = {}) {
+  console.log(`[${event}]`, options.message || "", options.data || "");
+  sendLogToSheet({
+    level: "INFO",
+    event,
+    message: options.message || "",
+    userId: options.userId || "",
+    utterance: options.utterance || "",
+    data: options.data || null,
+  }).catch((err) => {
+    console.error("writeInfoLog error:", err);
+  });
+}
+
+function writeErrorLog(event, error, options = {}) {
+  const errorText = error?.stack || error?.message || String(error);
+  console.error(`[${event}]`, errorText);
+
+  sendLogToSheet({
+    level: "ERROR",
+    event,
+    message: options.message || errorText,
+    userId: options.userId || "",
+    utterance: options.utterance || "",
+    data: {
+      error: errorText,
+      extra: options.data || null,
+    },
+  }).catch((err) => {
+    console.error("writeErrorLog error:", err);
+  });
 }
 
 /* ---------------------------
  * Apps Script 호출
  * --------------------------- */
 
-async function postToScript(payload) {
-  const res = await fetch(WRITE_URL, {
+async function callScript(payload) {
+  const response = await fetch(WRITE_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    redirect: "follow",
   });
 
-  const raw = await res.text();
-  console.log("SCRIPT RAW RESULT:", raw);
+  const text = await response.text();
+  console.log("SCRIPT RAW RESULT:", text);
 
   try {
-    return JSON.parse(raw);
+    return JSON.parse(text);
   } catch (err) {
     return {
       ok: false,
-      message: "Apps Script JSON 파싱 실패",
-      raw
+      message: "Apps Script가 JSON이 아닌 응답을 반환했습니다.",
+      raw: text,
     };
   }
 }
 
-async function writeSheetLog({
-  logAction = "",
-  userId = "",
-  result = "",
-  datetime = "",
-  memo = ""
-}) {
-  return postToScript({
-    action: "writeLog",
-    logAction,
-    userId,
-    result,
-    datetime,
-    memo
-  });
-}
-
-function fireAndForgetLog(payload) {
-  writeSheetLog(payload).catch((err) => {
-    console.error("writeSheetLog error:", err.message);
-  });
-}
-
 async function ensureMapping(userId) {
-  return await postToScript({
+  return callScript({
     action: "ensureMapping",
-    userId
+    userId,
   });
 }
 
-async function findReservation(date, userId) {
-  return await postToScript({
+async function findExistingReservation(userId, date) {
+  const result = await callScript({
     action: "findReservation",
+    userId,
     date,
-    userId
   });
+
+  if (!result.ok) return null;
+  return result.found ? result.row || { found: true } : null;
 }
 
-async function reserve(date, time, userId) {
-  return await postToScript({
+async function saveReservation({ date, time, userId, name }) {
+  return callScript({
     action: "reserve",
     date,
     time,
-    name: "미등록",
+    name,
     userId,
-    status: "예약완료"
+    status: "예약완료",
   });
 }
 
-async function cancel(date, userId) {
-  return await postToScript({
+async function cancelReservation({ date, userId }) {
+  return callScript({
     action: "cancel",
     date,
-    userId
+    userId,
   });
 }
 
 /* ---------------------------
- * 메인 처리
+ * 상태 시트 조회
  * --------------------------- */
 
-app.get("/", (req, res) => {
-  res.send("OK");
-});
+async function getAvailability(date, period) {
+  const rows = await fetchCsvRows(STATUS_CSV_URL);
+  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
 
-async function handleWebhook(req, res) {
+  if (!row) return null;
+
+  return String(row[period] || "").trim();
+}
+
+async function getAvailableSlots(dates) {
+  const rows = await fetchCsvRows(STATUS_CSV_URL);
+  const result = [];
+
+  for (const date of dates) {
+    const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
+    if (!row) continue;
+
+    const slots = [];
+    if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
+    if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
+
+    if (slots.length > 0) {
+      result.push(`${date} (${slots.join(", ")})`);
+    }
+  }
+
+  if (result.length === 0) {
+    return "현재 예약 가능한 시간이 없습니다.";
+  }
+
+  return `예약 가능한 시간\n\n${result.join("\n")}`;
+}
+
+async function getSingleDateSlots(date) {
+  const rows = await fetchCsvRows(STATUS_CSV_URL);
+  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
+
+  if (!row) {
+    return "해당 날짜의 예약 정보를 찾지 못했습니다.";
+  }
+
+  const slots = [];
+  if (String(row["오전"] || "").trim() === "가능") slots.push("오전");
+  if (String(row["오후"] || "").trim() === "가능") slots.push("오후");
+
+  if (slots.length === 0) {
+    return `${date}에는 예약 가능한 시간이 없습니다.`;
+  }
+
+  return `${date} 예약 가능한 시간은 ${slots.join(", ")} 입니다.`;
+}
+
+/* ---------------------------
+ * 비즈니스 로직
+ * --------------------------- */
+
+async function handleReserveLike(utterance, userId) {
+  const extracted = extractFromUtterance(utterance);
+  const date = normalizeDate(extracted.date);
+  const hour = normalizeHour(extracted.time);
+  const period = getPeriod(hour);
+
+  writeInfoLog("HANDLE_RESERVE_START", {
+    userId,
+    utterance,
+    data: {
+      extracted,
+      date,
+      hour,
+      period,
+    },
+  });
+
+  if (!userId) {
+    return {
+      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      shouldSave: false,
+    };
+  }
+
+  if (!date || period === null) {
+    return {
+      message:
+        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
+      shouldSave: false,
+    };
+  }
+
   try {
-    const body = req.body || {};
-    const utterance = extractUtterance(body);
-    const userId = extractUserId(body);
+    const existing = await findExistingReservation(userId, date);
+    if (existing) {
+      writeInfoLog("HANDLE_RESERVE_DUPLICATE", {
+        userId,
+        utterance,
+        data: { date, existing },
+      });
 
-    console.log("utterance:", utterance);
-    console.log("userId:", userId);
+      return {
+        message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
+        shouldSave: false,
+      };
+    }
 
-    fireAndForgetLog({
-      logAction: "utterance",
+    const status = await getAvailability(date, period);
+
+    writeInfoLog("HANDLE_RESERVE_STATUS_CHECK", {
       userId,
-      result: "received",
-      datetime: "",
-      memo: utterance
+      utterance,
+      data: { date, period, status },
     });
 
-    if (!utterance || !userId) {
-      const replyText = "요청 정보를 확인할 수 없습니다.";
-
-      fireAndForgetLog({
-        logAction: "reply",
-        userId,
-        result: "sent",
-        datetime: "",
-        memo: replyText
-      });
-
-      return res.json(jsonResponse(replyText));
+    if (status === "마감") {
+      return {
+        message: "예약 마감되었습니다.",
+        shouldSave: false,
+      };
     }
 
-    const cancelIntent = isCancelIntent(utterance);
-    const reserveIntent = isReserveIntent(utterance);
+    if (status !== "가능") {
+      return {
+        message: "담당자 확인 후 연락드리겠습니다.",
+        shouldSave: false,
+      };
+    }
 
-    fireAndForgetLog({
-      logAction: "intent",
+    return {
+      message: "예약 확정되셨습니다.",
+      shouldSave: true,
+      date,
+      time: formatHour(hour),
       userId,
-      result: cancelIntent ? "cancel" : reserveIntent ? "reserve" : "ignore",
-      datetime: "",
-      memo: utterance
-    });
-
-    /* 예약/취소가 아니면 여기서 바로 종료 */
-    if (!reserveIntent && !cancelIntent) {
-      return res.json(jsonResponse("이해하기 어려워요"));
-    }
-
-    const parsed = extractDateTime(utterance);
-
-    console.log("extracted:", parsed);
-
-    fireAndForgetLog({
-      logAction: "extract",
-      userId,
-      result: parsed.date && (parsed.time || cancelIntent) ? "parsed" : "fail",
-      datetime:
-        parsed.date && parsed.time
-          ? `${parsed.date} ${parsed.time}`
-          : parsed.date,
-      memo: JSON.stringify(parsed)
-    });
-
-    if (!parsed.date) {
-      const replyText = "날짜를 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
-
-      fireAndForgetLog({
-        logAction: "reply",
-        userId,
-        result: "sent",
-        datetime: "",
-        memo: replyText
-      });
-
-      return res.json(jsonResponse(replyText));
-    }
-
-    /* ---------------------------
-     * 예약 처리
-     * --------------------------- */
-    if (reserveIntent) {
-      if (!parsed.time) {
-        const replyText = "시간을 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
-
-        fireAndForgetLog({
-          logAction: "reply",
-          userId,
-          result: "sent",
-          datetime: parsed.date,
-          memo: replyText
-        });
-
-        return res.json(jsonResponse(replyText));
-      }
-
-      const ensureResult = await ensureMapping(userId);
-      fireAndForgetLog({
-        logAction: "ensureMapping",
-        userId,
-        result: ensureResult.ok ? "success" : "fail",
-        datetime: parsed.date,
-        memo: JSON.stringify(ensureResult)
-      });
-
-      const foundResult = await findReservation(parsed.date, userId);
-      fireAndForgetLog({
-        logAction: "findReservation",
-        userId,
-        result: foundResult.found ? "found" : "not_found",
-        datetime: parsed.date,
-        memo: JSON.stringify(foundResult)
-      });
-
-      if (foundResult.ok && foundResult.found) {
-        const replyText =
-          `${parsed.date}에는 이미 예약이 있습니다.\n하루에 1건만 예약 가능합니다.`;
-
-        fireAndForgetLog({
-          logAction: "reply",
-          userId,
-          result: "sent",
-          datetime: `${parsed.date} ${parsed.time}`,
-          memo: replyText
-        });
-
-        return res.json(jsonResponse(replyText));
-      }
-
-      const reserveResult = await reserve(parsed.date, parsed.time, userId);
-      fireAndForgetLog({
-        logAction: "reserve_result",
-        userId,
-        result: reserveResult.ok ? "success" : "fail",
-        datetime: `${parsed.date} ${parsed.time}`,
-        memo: JSON.stringify(reserveResult)
-      });
-
-      const replyText = reserveResult.ok
-        ? "예약 확정되었습니다."
-        : (reserveResult.message || "예약 처리 중 문제가 발생했습니다.");
-
-      fireAndForgetLog({
-        logAction: "reply",
-        userId,
-        result: "sent",
-        datetime: `${parsed.date} ${parsed.time}`,
-        memo: replyText
-      });
-
-      return res.json(jsonResponse(replyText));
-    }
-
-    /* ---------------------------
-     * 취소 처리
-     * --------------------------- */
-    if (cancelIntent) {
-      const foundResult = await findReservation(parsed.date, userId);
-      fireAndForgetLog({
-        logAction: "findReservation_cancel",
-        userId,
-        result: foundResult.found ? "found" : "not_found",
-        datetime: parsed.date,
-        memo: JSON.stringify(foundResult)
-      });
-
-      if (!foundResult.ok || !foundResult.found) {
-        const replyText = "취소할 예약을 찾지 못했습니다.";
-
-        fireAndForgetLog({
-          logAction: "reply",
-          userId,
-          result: "sent",
-          datetime: parsed.date,
-          memo: replyText
-        });
-
-        return res.json(jsonResponse(replyText));
-      }
-
-      const cancelResult = await cancel(parsed.date, userId);
-      fireAndForgetLog({
-        logAction: "cancel_result",
-        userId,
-        result: cancelResult.ok ? "success" : "fail",
-        datetime: parsed.date,
-        memo: JSON.stringify(cancelResult)
-      });
-
-      const replyText = cancelResult.ok
-        ? "예약 취소되셨습니다."
-        : (cancelResult.message || "예약 취소 중 문제가 발생했습니다.");
-
-      fireAndForgetLog({
-        logAction: "reply",
-        userId,
-        result: "sent",
-        datetime: parsed.date,
-        memo: replyText
-      });
-
-      return res.json(jsonResponse(replyText));
-    }
-
-    return res.json(jsonResponse("이해하기 어려워요"));
+      name: "미등록",
+    };
   } catch (err) {
-    console.error("webhook error:", err);
-    return res.json(jsonResponse("처리 중 오류가 발생했습니다."));
+    writeErrorLog("HANDLE_RESERVE_ERROR", err, {
+      userId,
+      utterance,
+      data: { date, period },
+    });
+
+    return {
+      message: "담당자 확인 후 연락드리겠습니다.",
+      shouldSave: false,
+    };
   }
 }
 
-app.post("/", handleWebhook);
-app.post("/webhook", handleWebhook);
+async function handleCancel(utterance, userId) {
+  const extracted = extractFromUtterance(utterance);
+  const date = normalizeDate(extracted.date);
 
+  writeInfoLog("HANDLE_CANCEL_START", {
+    userId,
+    utterance,
+    data: {
+      extracted,
+      date,
+    },
+  });
+
+  if (!userId) {
+    return {
+      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
+      shouldCancel: false,
+    };
+  }
+
+  if (!date) {
+    return {
+      message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요",
+      shouldCancel: false,
+    };
+  }
+
+  const existing = await findExistingReservation(userId, date);
+
+  if (!existing) {
+    writeInfoLog("HANDLE_CANCEL_NO_RESERVATION", {
+      userId,
+      utterance,
+      data: { date },
+    });
+
+    return {
+      message: `${date}에 취소할 예약이 없습니다.`,
+      shouldCancel: false,
+    };
+  }
+
+  return {
+    message: `${date} 예약 취소되셨습니다.`,
+    shouldCancel: true,
+    date,
+    userId,
+  };
+}
+
+async function processRequest(body) {
+  const utterance = body?.userRequest?.utterance || "";
+  const userId = getUserId(body);
+  const intent = detectIntent(utterance);
+
+  writeInfoLog("PROCESS_REQUEST_START", {
+    userId,
+    utterance,
+    data: { intent, body },
+  });
+
+  if (intent === "single_day_slots") {
+    const extracted = extractFromUtterance(utterance);
+    const date = normalizeDate(extracted.date);
+    const message = await getSingleDateSlots(date);
+
+    writeInfoLog("PROCESS_REQUEST_SINGLE_DAY_SLOTS", {
+      userId,
+      utterance,
+      data: { date, message },
+    });
+
+    return { message };
+  }
+
+  if (intent === "multi") {
+    const dates = extractMultipleDates(utterance);
+    const message = await getAvailableSlots(dates);
+
+    writeInfoLog("PROCESS_REQUEST_MULTI", {
+      userId,
+      utterance,
+      data: { dates, message },
+    });
+
+    return { message };
+  }
+
+  if (intent === "week") {
+    const dates = getThisWeekDates();
+    const message = await getAvailableSlots(dates);
+
+    writeInfoLog("PROCESS_REQUEST_WEEK", {
+      userId,
+      utterance,
+      data: { dates, message },
+    });
+
+    return { message };
+  }
+
+  if (intent === "cancel") {
+    const result = { intent, ...(await handleCancel(utterance, userId)) };
+
+    writeInfoLog("PROCESS_REQUEST_CANCEL_RESULT", {
+      userId,
+      utterance,
+      data: result,
+    });
+
+    return result;
+  }
+
+  if (intent === "reserve") {
+    const result = { intent, ...(await handleReserveLike(utterance, userId)) };
+
+    writeInfoLog("PROCESS_REQUEST_RESERVE_RESULT", {
+      userId,
+      utterance,
+      data: result,
+    });
+
+    return result;
+  }
+
+  writeInfoLog("PROCESS_REQUEST_UNKNOWN", {
+    userId,
+    utterance,
+    data: { intent },
+  });
+
+  return {
+    message: "다시 말씀해 주세요.",
+  };
+}
+
+/* ---------------------------
+ * 라우터
+ * --------------------------- */
+
+app.get("/", (req, res) => {
+  res.send("ok");
+});
+
+app.post("/", async (req, res) => {
+  const utterance = req.body?.userRequest?.utterance || "";
+  const userId = getUserId(req.body);
+
+  try {
+    writeInfoLog("POST_REQUEST_RECEIVED", {
+      userId,
+      utterance,
+      data: req.body,
+    });
+
+    if (userId) {
+      ensureMapping(userId)
+        .then((result) => {
+          writeInfoLog("ENSURE_MAPPING_DONE", {
+            userId,
+            utterance,
+            data: result,
+          });
+        })
+        .catch((err) => {
+          writeErrorLog("ENSURE_MAPPING_ERROR", err, {
+            userId,
+            utterance,
+          });
+        });
+    }
+
+    const result = await processRequest(req.body);
+
+    const responsePayload = {
+      version: "2.0",
+      template: {
+        outputs: [
+          {
+            simpleText: {
+              text: result.message,
+            },
+          },
+        ],
+      },
+    };
+
+    res.json(responsePayload);
+
+    writeInfoLog("RESPONSE_SENT", {
+      userId,
+      utterance,
+      data: {
+        result,
+        responsePayload,
+      },
+    });
+
+    if (result.shouldSave) {
+      saveReservation({
+        date: result.date,
+        time: result.time,
+        userId: result.userId,
+        name: result.name,
+      })
+        .then((scriptResult) => {
+          writeInfoLog("SAVE_RESERVATION_DONE", {
+            userId: result.userId,
+            utterance,
+            data: scriptResult,
+          });
+        })
+        .catch((err) => {
+          writeErrorLog("SAVE_RESERVATION_ERROR", err, {
+            userId: result.userId,
+            utterance,
+            data: {
+              date: result.date,
+              time: result.time,
+            },
+          });
+        });
+    }
+
+    if (result.shouldCancel) {
+      cancelReservation({
+        date: result.date,
+        userId: result.userId,
+      })
+        .then((scriptResult) => {
+          writeInfoLog("CANCEL_RESERVATION_DONE", {
+            userId: result.userId,
+            utterance,
+            data: scriptResult,
+          });
+        })
+        .catch((err) => {
+          writeErrorLog("CANCEL_RESERVATION_ERROR", err, {
+            userId: result.userId,
+            utterance,
+            data: {
+              date: result.date,
+            },
+          });
+        });
+    }
+  } catch (error) {
+    writeErrorLog("POST_REQUEST_FATAL_ERROR", error, {
+      userId,
+      utterance,
+      data: req.body,
+    });
+
+    res.json({
+      version: "2.0",
+      template: {
+        outputs: [
+          {
+            simpleText: {
+              text: "담당자 확인 후 연락드리겠습니다.",
+            },
+          },
+        ],
+      },
+    });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`server listening on ${PORT}`);
+  console.log("server start");
+
+  sendLogToSheet({
+    level: "INFO",
+    event: "SERVER_START",
+    message: "server start",
+    data: { port: PORT },
+  }).catch((err) => {
+    console.error("SERVER_START log error:", err);
+  });
 });
