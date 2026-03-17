@@ -267,114 +267,151 @@ async function cancel(date, userId) {
 }
 
 /* ---------------------------
- * 메인 라우트
+ * 메인 처리
  * --------------------------- */
 
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-app.post("/webhook", async (req, res) => {
-  const body = req.body || {};
-  const utterance = extractUtterance(body);
-  const userId = extractUserId(body);
+async function handleWebhook(req, res) {
+  try {
+    const body = req.body || {};
+    const utterance = extractUtterance(body);
+    const userId = extractUserId(body);
 
-  console.log("utterance:", utterance);
-  console.log("userId:", userId);
-
-  await writeSheetLog({
-    logAction: "utterance",
-    userId,
-    result: "received",
-    datetime: "",
-    memo: utterance
-  });
-
-  if (!utterance || !userId) {
-    await writeSheetLog({
-      logAction: "validation",
-      userId,
-      result: "fail",
-      datetime: "",
-      memo: "utterance 또는 userId 누락"
-    });
-
-    return res.json(jsonResponse("요청 정보를 확인할 수 없습니다."));
-  }
-
-  const parsed = extractDateTime(utterance);
-
-  console.log("extracted:", parsed);
-
-  await writeSheetLog({
-    logAction: "extract",
-    userId,
-    result: parsed.date && parsed.time ? "parsed" : "fail",
-    datetime: parsed.date && parsed.time ? `${parsed.date} ${parsed.time}` : "",
-    memo: JSON.stringify(parsed)
-  });
-
-  if (!parsed.date) {
-    const replyText = "날짜를 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
+    console.log("utterance:", utterance);
+    console.log("userId:", userId);
 
     await writeSheetLog({
-      logAction: "reply",
+      logAction: "utterance",
       userId,
-      result: "sent",
+      result: "received",
       datetime: "",
-      memo: replyText
+      memo: utterance
     });
 
-    return res.json(jsonResponse(replyText));
-  }
+    if (!utterance || !userId) {
+      await writeSheetLog({
+        logAction: "validation",
+        userId,
+        result: "fail",
+        datetime: "",
+        memo: "utterance 또는 userId 누락"
+      });
 
-  if (isReserveIntent(utterance) && !isCancelIntent(utterance)) {
-    if (!parsed.time) {
-      const replyText = "시간을 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
+      return res.json(jsonResponse("요청 정보를 확인할 수 없습니다."));
+    }
+
+    const parsed = extractDateTime(utterance);
+
+    console.log("extracted:", parsed);
+
+    await writeSheetLog({
+      logAction: "extract",
+      userId,
+      result: parsed.date && parsed.time ? "parsed" : "fail",
+      datetime: parsed.date && parsed.time ? `${parsed.date} ${parsed.time}` : "",
+      memo: JSON.stringify(parsed)
+    });
+
+    if (!parsed.date) {
+      const replyText = "날짜를 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
 
       await writeSheetLog({
         logAction: "reply",
         userId,
         result: "sent",
-        datetime: parsed.date,
+        datetime: "",
         memo: replyText
       });
 
       return res.json(jsonResponse(replyText));
     }
 
-    const ensureResult = await ensureMapping(userId);
-    await writeSheetLog({
-      logAction: "ensureMapping",
-      userId,
-      result: ensureResult.ok ? "success" : "fail",
-      datetime: parsed.date,
-      memo: JSON.stringify(ensureResult)
-    });
+    if (isReserveIntent(utterance) && !isCancelIntent(utterance)) {
+      if (!parsed.time) {
+        const replyText = "시간을 이해하지 못했습니다. 예: 17일 13시 예약 가능할까요?";
 
-    const nameResult = await getName(userId);
-    await writeSheetLog({
-      logAction: "getName",
-      userId,
-      result: nameResult.ok ? "success" : "fail",
-      datetime: parsed.date,
-      memo: JSON.stringify(nameResult)
-    });
+        await writeSheetLog({
+          logAction: "reply",
+          userId,
+          result: "sent",
+          datetime: parsed.date,
+          memo: replyText
+        });
 
-    const displayName = safeString(nameResult.name) || "미등록";
+        return res.json(jsonResponse(replyText));
+      }
 
-    const foundResult = await findReservation(parsed.date, userId);
-    await writeSheetLog({
-      logAction: "findReservation",
-      userId,
-      result: foundResult.found ? "found" : "not_found",
-      datetime: parsed.date,
-      memo: JSON.stringify(foundResult)
-    });
+      const ensureResult = await ensureMapping(userId);
+      await writeSheetLog({
+        logAction: "ensureMapping",
+        userId,
+        result: ensureResult.ok ? "success" : "fail",
+        datetime: parsed.date,
+        memo: JSON.stringify(ensureResult)
+      });
 
-    if (foundResult.ok && foundResult.found) {
-      const replyText =
-        `${parsed.date}에는 이미 예약이 있습니다.\n하루에 1건만 예약 가능합니다.`;
+      const nameResult = await getName(userId);
+      await writeSheetLog({
+        logAction: "getName",
+        userId,
+        result: nameResult.ok ? "success" : "fail",
+        datetime: parsed.date,
+        memo: JSON.stringify(nameResult)
+      });
+
+      const displayName = safeString(nameResult.name) || "미등록";
+
+      const foundResult = await findReservation(parsed.date, userId);
+      await writeSheetLog({
+        logAction: "findReservation",
+        userId,
+        result: foundResult.found ? "found" : "not_found",
+        datetime: parsed.date,
+        memo: JSON.stringify(foundResult)
+      });
+
+      if (foundResult.ok && foundResult.found) {
+        const replyText =
+          `${parsed.date}에는 이미 예약이 있습니다.\n하루에 1건만 예약 가능합니다.`;
+
+        await writeSheetLog({
+          logAction: "reply",
+          userId,
+          result: "sent",
+          datetime: `${parsed.date} ${parsed.time}`,
+          memo: replyText
+        });
+
+        return res.json(jsonResponse(replyText));
+      }
+
+      const reserveResult = await reserve(parsed.date, parsed.time, displayName, userId);
+      await writeSheetLog({
+        logAction: "reserve_result",
+        userId,
+        result: reserveResult.ok ? "success" : "fail",
+        datetime: `${parsed.date} ${parsed.time}`,
+        memo: JSON.stringify(reserveResult)
+      });
+
+      if (reserveResult.ok) {
+        const replyText = "예약 확정되었습니다.";
+
+        await writeSheetLog({
+          logAction: "reply",
+          userId,
+          result: "sent",
+          datetime: `${parsed.date} ${parsed.time}`,
+          memo: replyText
+        });
+
+        return res.json(jsonResponse(replyText));
+      }
+
+      const replyText = reserveResult.message || "예약 처리 중 문제가 발생했습니다.";
 
       await writeSheetLog({
         logAction: "reply",
@@ -387,54 +424,42 @@ app.post("/webhook", async (req, res) => {
       return res.json(jsonResponse(replyText));
     }
 
-    const reserveResult = await reserve(parsed.date, parsed.time, displayName, userId);
-    await writeSheetLog({
-      logAction: "reserve_result",
-      userId,
-      result: reserveResult.ok ? "success" : "fail",
-      datetime: `${parsed.date} ${parsed.time}`,
-      memo: JSON.stringify(reserveResult)
-    });
-
-    if (reserveResult.ok) {
-      const replyText = "예약 확정되었습니다.";
-
+    if (isCancelIntent(utterance)) {
+      const foundResult = await findReservation(parsed.date, userId);
       await writeSheetLog({
-        logAction: "reply",
+        logAction: "findReservation_cancel",
         userId,
-        result: "sent",
-        datetime: `${parsed.date} ${parsed.time}`,
-        memo: replyText
+        result: foundResult.found ? "found" : "not_found",
+        datetime: parsed.date,
+        memo: JSON.stringify(foundResult)
       });
 
-      return res.json(jsonResponse(replyText));
-    }
+      if (!foundResult.ok || !foundResult.found) {
+        const replyText = "취소할 예약을 찾지 못했습니다.";
 
-    const replyText = reserveResult.message || "예약 처리 중 문제가 발생했습니다.";
+        await writeSheetLog({
+          logAction: "reply",
+          userId,
+          result: "sent",
+          datetime: parsed.date,
+          memo: replyText
+        });
 
-    await writeSheetLog({
-      logAction: "reply",
-      userId,
-      result: "sent",
-      datetime: `${parsed.date} ${parsed.time}`,
-      memo: replyText
-    });
+        return res.json(jsonResponse(replyText));
+      }
 
-    return res.json(jsonResponse(replyText));
-  }
+      const cancelResult = await cancel(parsed.date, userId);
+      await writeSheetLog({
+        logAction: "cancel_result",
+        userId,
+        result: cancelResult.ok ? "success" : "fail",
+        datetime: parsed.date,
+        memo: JSON.stringify(cancelResult)
+      });
 
-  if (isCancelIntent(utterance)) {
-    const foundResult = await findReservation(parsed.date, userId);
-    await writeSheetLog({
-      logAction: "findReservation_cancel",
-      userId,
-      result: foundResult.found ? "found" : "not_found",
-      datetime: parsed.date,
-      memo: JSON.stringify(foundResult)
-    });
-
-    if (!foundResult.ok || !foundResult.found) {
-      const replyText = "취소할 예약을 찾지 못했습니다.";
+      const replyText = cancelResult.ok
+        ? "예약 취소되셨습니다."
+        : (cancelResult.message || "예약 취소 중 문제가 발생했습니다.");
 
       await writeSheetLog({
         logAction: "reply",
@@ -447,42 +472,25 @@ app.post("/webhook", async (req, res) => {
       return res.json(jsonResponse(replyText));
     }
 
-    const cancelResult = await cancel(parsed.date, userId);
-    await writeSheetLog({
-      logAction: "cancel_result",
-      userId,
-      result: cancelResult.ok ? "success" : "fail",
-      datetime: parsed.date,
-      memo: JSON.stringify(cancelResult)
-    });
-
-    const replyText = cancelResult.ok
-      ? "예약 취소되셨습니다."
-      : (cancelResult.message || "예약 취소 중 문제가 발생했습니다.");
+    const fallback = "이해하기 어려워요";
 
     await writeSheetLog({
       logAction: "reply",
       userId,
       result: "sent",
-      datetime: parsed.date,
-      memo: replyText
+      datetime: "",
+      memo: fallback
     });
 
-    return res.json(jsonResponse(replyText));
+    return res.json(jsonResponse(fallback));
+  } catch (err) {
+    console.error("webhook error:", err);
+    return res.json(jsonResponse("처리 중 오류가 발생했습니다."));
   }
+}
 
-  const fallback = "이해하기 어려워요";
-
-  await writeSheetLog({
-    logAction: "reply",
-    userId,
-    result: "sent",
-    datetime: "",
-    memo: fallback
-  });
-
-  return res.json(jsonResponse(fallback));
-});
+app.post("/", handleWebhook);
+app.post("/webhook", handleWebhook);
 
 app.listen(PORT, () => {
   console.log(`server listening on ${PORT}`);
