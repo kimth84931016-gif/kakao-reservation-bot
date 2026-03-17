@@ -15,10 +15,6 @@ const WRITE_URL =
  * 공통 유틸
  * --------------------------- */
 
-function safeString(v) {
-  return String(v || "").trim();
-}
-
 function parseCsvLine(line) {
   const result = [];
   let current = "";
@@ -244,44 +240,6 @@ async function callScript(payload) {
   }
 }
 
-function fireAndForgetScript(payload, label = "script") {
-  callScript(payload).catch((err) => {
-    console.error(`${label} error:`, err);
-  });
-}
-
-/* ---------------------------
- * Render 로그
- * --------------------------- */
-
-function writeRenderLog({ action = "", userId = "", result = "", datetime = "", memo = "" }) {
-  fireAndForgetScript(
-    {
-      action: "writeLog",
-      logAction: action,
-      userId: safeString(userId),
-      result: safeString(result),
-      datetime: safeString(datetime),
-      memo: safeString(memo),
-    },
-    "writeRenderLog"
-  );
-}
-
-function writeReplyLog(userId, message, datetime = "") {
-  writeRenderLog({
-    action: "reply",
-    userId,
-    result: "sent",
-    datetime,
-    memo: message || "[무응답]",
-  });
-}
-
-/* ---------------------------
- * Apps Script 비즈니스 호출
- * --------------------------- */
-
 async function ensureMapping(userId) {
   return callScript({
     action: "ensureMapping",
@@ -349,20 +307,6 @@ async function handleReserveLike(utterance, userId) {
   console.log("RESERVE-LIKE period:", period);
   console.log("RESERVE-LIKE userId:", userId);
 
-  writeRenderLog({
-    action: "reserve_parse",
-    userId,
-    result: date && period ? "parsed" : "fail",
-    datetime: date && hour !== null ? `${date} ${formatHour(hour)}` : safeString(date),
-    memo: JSON.stringify({
-      utterance,
-      extracted,
-      date,
-      hour,
-      period,
-    }),
-  });
-
   if (!userId) {
     return {
       message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
@@ -380,15 +324,6 @@ async function handleReserveLike(utterance, userId) {
 
   try {
     const existing = await findExistingReservation(userId, date);
-
-    writeRenderLog({
-      action: "findReservation",
-      userId,
-      result: existing ? "found" : "not_found",
-      datetime: date,
-      memo: existing ? JSON.stringify(existing) : "",
-    });
-
     if (existing) {
       return {
         message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
@@ -397,14 +332,6 @@ async function handleReserveLike(utterance, userId) {
     }
 
     const status = await getAvailability(date, period);
-
-    writeRenderLog({
-      action: "availability",
-      userId,
-      result: safeString(status || "empty"),
-      datetime: `${date} ${period}`,
-      memo: "",
-    });
 
     if (status === "마감") {
       return {
@@ -430,15 +357,6 @@ async function handleReserveLike(utterance, userId) {
     };
   } catch (err) {
     console.error("handleReserveLike error:", err);
-
-    writeRenderLog({
-      action: "reserve_error",
-      userId,
-      result: "fail",
-      datetime: date || "",
-      memo: String(err),
-    });
-
     return {
       message: "담당자 확인 후 연락드리겠습니다.",
       shouldSave: false,
@@ -455,18 +373,6 @@ async function handleCancel(utterance, userId) {
   console.log("CANCEL normalized date:", date);
   console.log("CANCEL userId:", userId);
 
-  writeRenderLog({
-    action: "cancel_parse",
-    userId,
-    result: date ? "parsed" : "fail",
-    datetime: date || "",
-    memo: JSON.stringify({
-      utterance,
-      extracted,
-      date,
-    }),
-  });
-
   if (!userId) {
     return {
       message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
@@ -482,14 +388,6 @@ async function handleCancel(utterance, userId) {
   }
 
   const existing = await findExistingReservation(userId, date);
-
-  writeRenderLog({
-    action: "findReservation_cancel",
-    userId,
-    result: existing ? "found" : "not_found",
-    datetime: date,
-    memo: existing ? JSON.stringify(existing) : "",
-  });
 
   if (!existing) {
     return {
@@ -514,14 +412,6 @@ async function processRequest(body) {
   console.log("intent:", intent);
   console.log("userId:", userId);
 
-  writeRenderLog({
-    action: "intent",
-    userId,
-    result: intent,
-    datetime: "",
-    memo: utterance,
-  });
-
   if (intent === "cancel") {
     return { intent, ...(await handleCancel(utterance, userId)) };
   }
@@ -543,53 +433,19 @@ app.get("/", (req, res) => {
   res.send("ok");
 });
 
-async function handleWebhook(req, res) {
+app.post("/", async (req, res) => {
   try {
-    const utterance = req.body?.userRequest?.utterance || "";
     const userId = getUserId(req.body);
 
-    writeRenderLog({
-      action: "utterance",
-      userId,
-      result: "received",
-      datetime: "",
-      memo: utterance,
-    });
-
     if (userId) {
-      ensureMapping(userId)
-        .then((result) => {
-          writeRenderLog({
-            action: "ensureMapping",
-            userId,
-            result: result?.ok ? "success" : "fail",
-            datetime: "",
-            memo: JSON.stringify(result || {}),
-          });
-        })
-        .catch((err) => {
-          console.error("ensureMapping error:", err);
-          writeRenderLog({
-            action: "ensureMapping",
-            userId,
-            result: "fail",
-            datetime: "",
-            memo: String(err),
-          });
-        });
+      ensureMapping(userId).catch((err) => {
+        console.error("ensureMapping error:", err);
+      });
     }
 
     const result = await processRequest(req.body);
 
     res.json(buildKakaoResponse(result.message));
-
-    writeReplyLog(
-      userId,
-      result.message,
-      result.date && result.time
-        ? `${result.date} ${result.time}`
-        : result.date || ""
-    );
 
     if (result.shouldSave) {
       saveReservation({
@@ -600,23 +456,9 @@ async function handleWebhook(req, res) {
       })
         .then((scriptResult) => {
           console.log("예약 기록 완료:", scriptResult);
-          writeRenderLog({
-            action: "reserve_save",
-            userId: result.userId,
-            result: scriptResult?.ok ? "success" : "fail",
-            datetime: `${result.date} ${result.time}`,
-            memo: JSON.stringify(scriptResult || {}),
-          });
         })
         .catch((err) => {
           console.error("saveReservation error:", err);
-          writeRenderLog({
-            action: "reserve_save",
-            userId: result.userId,
-            result: "fail",
-            datetime: `${result.date} ${result.time}`,
-            memo: String(err),
-          });
         });
     }
 
@@ -627,46 +469,63 @@ async function handleWebhook(req, res) {
       })
         .then((scriptResult) => {
           console.log("예약 취소 처리 결과:", scriptResult);
-          writeRenderLog({
-            action: "cancel_save",
-            userId: result.userId,
-            result: scriptResult?.ok ? "success" : "fail",
-            datetime: result.date,
-            memo: JSON.stringify(scriptResult || {}),
-          });
         })
         .catch((err) => {
           console.error("cancelReservation error:", err);
-          writeRenderLog({
-            action: "cancel_save",
-            userId: result.userId,
-            result: "fail",
-            datetime: result.date,
-            memo: String(err),
-          });
         });
     }
   } catch (error) {
     console.error(error);
+    res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
+  }
+});
 
+app.post("/webhook", async (req, res) => {
+  try {
     const userId = getUserId(req.body);
 
-    writeRenderLog({
-      action: "server_error",
-      userId,
-      result: "fail",
-      datetime: "",
-      memo: String(error),
-    });
+    if (userId) {
+      ensureMapping(userId).catch((err) => {
+        console.error("ensureMapping error:", err);
+      });
+    }
 
-    res.json(
-      buildKakaoResponse("담당자 확인 후 연락드리겠습니다.")
-    );
+    const result = await processRequest(req.body);
+
+    res.json(buildKakaoResponse(result.message));
+
+    if (result.shouldSave) {
+      saveReservation({
+        date: result.date,
+        time: result.time,
+        userId: result.userId,
+        name: result.name,
+      })
+        .then((scriptResult) => {
+          console.log("예약 기록 완료:", scriptResult);
+        })
+        .catch((err) => {
+          console.error("saveReservation error:", err);
+        });
+    }
+
+    if (result.shouldCancel) {
+      cancelReservation({
+        date: result.date,
+        userId: result.userId,
+      })
+        .then((scriptResult) => {
+          console.log("예약 취소 처리 결과:", scriptResult);
+        })
+        .catch((err) => {
+          console.error("cancelReservation error:", err);
+        });
+    }
+  } catch (error) {
+    console.error(error);
+    res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
   }
-}
-
-app.post("/", handleWebhook);
-app.post("/webhook", handleWebhook);
+});
 
 app.listen(PORT, () => {
   console.log("server start");
