@@ -5,73 +5,25 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-const STATUS_CSV_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vSkuiyWVse5fkRy2DOIe3umh2_PhkAlWthbYtP6AIxU8XGnMPl7vpFdaaMB3aucwGqe31FURworghkx/pub?gid=374063695&single=true&output=csv";
-
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbwN48Xv7Ol9YoDSbebFlxehcZtzR2fz_6Sw4-WqAaWJrF0XpaOb8Kfd2UU3Fd9mbzaG/exec";
+  "https://script.google.com/macros/s/AKfycbxVk31JmmnUa2OmL402BS3xPQAKjdD2TT72GkgKv1q_HZJ9F1ZgdwaKGKOiEodciElh/exec";
 
 /* ---------------------------
  * 공통 유틸
  * --------------------------- */
 
-function parseCsvLine(line) {
-  const result = [];
-  let current = "";
-  let inQuotes = false;
+async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    const next = line[i + 1];
-
-    if (ch === '"') {
-      if (inQuotes && next === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === "," && !inQuotes) {
-      result.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-
-  result.push(current);
-  return result.map((v) => String(v || "").trim());
-}
-
-function parseCsvWithHeader(text) {
-  const lines = String(text || "")
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean);
-
-  if (lines.length < 2) return [];
-
-  const headers = parseCsvLine(lines[0]);
-  const rows = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvLine(lines[i]);
-    const row = {};
-
-    headers.forEach((header, idx) => {
-      row[header] = (cols[idx] || "").trim();
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
     });
-
-    rows.push(row);
+  } finally {
+    clearTimeout(timer);
   }
-
-  return rows;
-}
-
-async function fetchCsvRows(url) {
-  const res = await fetch(url);
-  const text = await res.text();
-  return parseCsvWithHeader(text);
 }
 
 function normalizeDate(value) {
@@ -214,26 +166,39 @@ function buildKakaoResponse(text) {
  * Apps Script 호출
  * --------------------------- */
 
-async function callScript(payload) {
-  const response = await fetch(WRITE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    redirect: "follow",
-  });
-
-  const text = await response.text();
-  console.log("SCRIPT RAW RESULT:", text);
-
+async function callScript(payload, timeoutMs = 3500) {
   try {
-    return JSON.parse(text);
+    const response = await fetchWithTimeout(
+      WRITE_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        redirect: "follow",
+      },
+      timeoutMs
+    );
+
+    const text = await response.text();
+    console.log("SCRIPT RAW RESULT:", text);
+
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      return {
+        ok: false,
+        message: "Apps Script가 JSON이 아닌 응답을 반환했습니다.",
+        raw: text,
+      };
+    }
   } catch (err) {
+    console.error("callScript error:", err);
     return {
       ok: false,
-      message: "Apps Script가 JSON이 아닌 응답을 반환했습니다.",
-      raw: text,
+      message: "Apps Script 호출 실패",
+      error: String(err),
     };
   }
 }
@@ -245,47 +210,46 @@ async function ensureMapping(userId) {
   });
 }
 
+async function prepareReserve({ date, period, userId }) {
+  return callScript({
+    action: "prepareReserve",
+    date,
+    period,
+    userId,
+  });
+}
+
 async function findExistingReservation(userId, date) {
-  const result = await callScript({
+  return callScript({
     action: "findReservation",
     userId,
     date,
   });
-
-  if (!result.ok) return null;
-  return result.found ? result.row || { found: true } : null;
 }
 
 async function saveReservation({ date, time, userId, name }) {
-  return callScript({
-    action: "reserve",
-    date,
-    time,
-    name,
-    userId,
-    status: "예약완료",
-  });
+  return callScript(
+    {
+      action: "reserve",
+      date,
+      time,
+      name,
+      userId,
+      status: "예약완료",
+    },
+    8000
+  );
 }
 
 async function cancelReservation({ date, userId }) {
-  return callScript({
-    action: "cancel",
-    date,
-    userId,
-  });
-}
-
-/* ---------------------------
- * 상태 시트 조회
- * --------------------------- */
-
-async function getAvailability(date, period) {
-  const rows = await fetchCsvRows(STATUS_CSV_URL);
-  const row = rows.find((r) => normalizeDate(r["날짜"]) === date);
-
-  if (!row) return null;
-
-  return String(row[period] || "").trim();
+  return callScript(
+    {
+      action: "cancel",
+      date,
+      userId,
+    },
+    8000
+  );
 }
 
 /* ---------------------------
@@ -298,12 +262,12 @@ async function handleReserveLike(utterance, userId) {
   const hour = normalizeHour(extracted.time);
   const period = getPeriod(hour);
 
-  console.log("RESERVE-LIKE utterance:", utterance);
-  console.log("RESERVE-LIKE extracted:", extracted);
-  console.log("RESERVE-LIKE normalized date:", date);
-  console.log("RESERVE-LIKE hour:", hour);
-  console.log("RESERVE-LIKE period:", period);
-  console.log("RESERVE-LIKE userId:", userId);
+  console.log("RESERVE utterance:", utterance);
+  console.log("RESERVE extracted:", extracted);
+  console.log("RESERVE date:", date);
+  console.log("RESERVE hour:", hour);
+  console.log("RESERVE period:", period);
+  console.log("RESERVE userId:", userId);
 
   if (!userId) {
     return {
@@ -321,24 +285,41 @@ async function handleReserveLike(utterance, userId) {
   }
 
   try {
-    const existing = await findExistingReservation(userId, date);
-    if (existing) {
+    const precheck = await prepareReserve({
+      date,
+      period,
+      userId,
+    });
+
+    if (!precheck.ok) {
+      return {
+        message: "담당자 확인 후 연락드리겠습니다.",
+        shouldSave: false,
+      };
+    }
+
+    if (precheck.result === "duplicate") {
       return {
         message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
         shouldSave: false,
       };
     }
 
-    const status = await getAvailability(date, period);
-
-    if (status === "마감") {
+    if (precheck.result === "closed") {
       return {
         message: "예약 마감되었습니다.",
         shouldSave: false,
       };
     }
 
-    if (status !== "가능") {
+    if (precheck.result === "unavailable") {
+      return {
+        message: "담당자 확인 후 연락드리겠습니다.",
+        shouldSave: false,
+      };
+    }
+
+    if (precheck.result !== "ok") {
       return {
         message: "담당자 확인 후 연락드리겠습니다.",
         shouldSave: false,
@@ -351,7 +332,7 @@ async function handleReserveLike(utterance, userId) {
       date,
       time: formatHour(hour),
       userId,
-      name: "미등록",
+      name: precheck.name || "미등록",
     };
   } catch (err) {
     console.error("handleReserveLike error:", err);
@@ -368,7 +349,7 @@ async function handleCancel(utterance, userId) {
 
   console.log("CANCEL utterance:", utterance);
   console.log("CANCEL extracted:", extracted);
-  console.log("CANCEL normalized date:", date);
+  console.log("CANCEL date:", date);
   console.log("CANCEL userId:", userId);
 
   if (!userId) {
@@ -387,7 +368,14 @@ async function handleCancel(utterance, userId) {
 
   const existing = await findExistingReservation(userId, date);
 
-  if (!existing) {
+  if (!existing.ok) {
+    return {
+      message: "담당자 확인 후 연락드리겠습니다.",
+      shouldCancel: false,
+    };
+  }
+
+  if (!existing.found) {
     return {
       message: `${date}에 취소할 예약이 없습니다.`,
       shouldCancel: false,
@@ -436,17 +424,8 @@ async function handleWebhook(req, res) {
     console.log("incoming utterance:", utterance);
     console.log("detected intent:", intent);
 
-    // 예약/취소 외에는 아무 응답도 보내지 않음
     if (intent === "unknown") {
       return res.status(204).end();
-    }
-
-    const userId = getUserId(req.body);
-
-    if (userId) {
-      ensureMapping(userId).catch((err) => {
-        console.error("ensureMapping error:", err);
-      });
     }
 
     const result = await processRequest(req.body);
@@ -456,6 +435,14 @@ async function handleWebhook(req, res) {
     }
 
     res.json(buildKakaoResponse(result.message));
+
+    const userId = getUserId(req.body);
+
+    if (userId) {
+      ensureMapping(userId).catch((err) => {
+        console.error("ensureMapping error:", err);
+      });
+    }
 
     if (result.shouldSave) {
       saveReservation({
