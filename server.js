@@ -86,52 +86,8 @@ function formatHour(hour) {
   return `${String(hour).padStart(2, "0")}:00`;
 }
 
-function extractFromUtterance(text) {
-  const utterance = String(text || "").trim();
-
-  let date = null;
-  let time = null;
-
-  const ymd = utterance.match(/(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-  if (ymd) {
-    date = `${ymd[1]}-${String(ymd[2]).padStart(2, "0")}-${String(ymd[3]).padStart(2, "0")}`;
-  } else {
-    const md = utterance.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
-    if (md) {
-      const now = new Date();
-      date = `${now.getFullYear()}-${String(md[1]).padStart(2, "0")}-${String(md[2]).padStart(2, "0")}`;
-    } else {
-      const dOnly = utterance.match(/(\d{1,2})\s*일/);
-      if (dOnly) {
-        const now = new Date();
-        date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(dOnly[1]).padStart(2, "0")}`;
-      }
-    }
-  }
-
-  const hhmm = utterance.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
-  if (hhmm) {
-    time = hhmm[1];
-    return { date, time };
-  }
-
-  const hourText = utterance.match(/(오전|오후)?\s*\d{1,2}\s*시/);
-  if (hourText) {
-    time = hourText[0];
-    return { date, time };
-  }
-
-  if (/오전/.test(utterance)) {
-    time = "오전";
-    return { date, time };
-  }
-
-  if (/오후/.test(utterance)) {
-    time = "오후";
-    return { date, time };
-  }
-
-  return { date, time };
+function getUserId(body) {
+  return body?.userRequest?.user?.id || null;
 }
 
 function detectIntent(text) {
@@ -141,10 +97,6 @@ function detectIntent(text) {
   if (/예약/.test(utterance)) return "reserve";
 
   return "unknown";
-}
-
-function getUserId(body) {
-  return body?.userRequest?.user?.id || null;
 }
 
 function buildKakaoResponse(text) {
@@ -160,6 +112,72 @@ function buildKakaoResponse(text) {
       ],
     },
   };
+}
+
+function uniq(arr) {
+  return [...new Set(arr)];
+}
+
+function formatDateShort(date) {
+  const m = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return date;
+  return `${parseInt(m[2], 10)}월 ${parseInt(m[3], 10)}일`;
+}
+
+/* ---------------------------
+ * 복수 날짜 추출
+ * --------------------------- */
+
+function extractDatesFromUtterance(text) {
+  const utterance = String(text || "").trim();
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  const dates = [];
+
+  const ymdRegex = /(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/g;
+  let match;
+  while ((match = ymdRegex.exec(utterance)) !== null) {
+    dates.push(
+      `${match[1]}-${String(match[2]).padStart(2, "0")}-${String(match[3]).padStart(2, "0")}`
+    );
+  }
+
+  if (dates.length > 0) return uniq(dates);
+
+  const mdRegex = /(\d{1,2})\s*월\s*(\d{1,2})\s*일/g;
+  while ((match = mdRegex.exec(utterance)) !== null) {
+    dates.push(
+      `${currentYear}-${String(match[1]).padStart(2, "0")}-${String(match[2]).padStart(2, "0")}`
+    );
+  }
+
+  if (dates.length > 0) return uniq(dates);
+
+  const dayOnlyRegex = /(\d{1,2})\s*일/g;
+  while ((match = dayOnlyRegex.exec(utterance)) !== null) {
+    dates.push(
+      `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(match[1]).padStart(2, "0")}`
+    );
+  }
+
+  return uniq(dates);
+}
+
+function extractTimeFromUtterance(text) {
+  const utterance = String(text || "").trim();
+
+  const hhmm = utterance.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (hhmm) return hhmm[1];
+
+  const hourText = utterance.match(/(오전|오후)?\s*\d{1,2}\s*시/);
+  if (hourText) return hourText[0];
+
+  if (/오전/.test(utterance)) return "오전";
+  if (/오후/.test(utterance)) return "오후";
+
+  return null;
 }
 
 /* ---------------------------
@@ -262,18 +280,71 @@ async function cancelReservation({ date, userId }) {
 }
 
 /* ---------------------------
+ * 문구 조합
+ * --------------------------- */
+
+function buildReserveMessage(successDates, closedDates, duplicateDates, failedDates) {
+  const messages = [];
+
+  if (successDates.length > 0) {
+    if (successDates.length === 1) {
+      messages.push(`${formatDateShort(successDates[0])} 예약 확정되셨습니다.`);
+    } else {
+      messages.push(
+        `${successDates.map(formatDateShort).join(", ")} 예약 확정되셨습니다.`
+      );
+    }
+  }
+
+  if (closedDates.length > 0) {
+    messages.push(`${closedDates.map(formatDateShort).join(", ")} 예약 마감되었습니다.`);
+  }
+
+  if (duplicateDates.length > 0) {
+    messages.push(
+      `${duplicateDates.map(formatDateShort).join(", ")}에는 이미 예약이 있습니다.`
+    );
+  }
+
+  if (failedDates.length > 0 && messages.length === 0) {
+    return null;
+  }
+
+  return messages.join("\n");
+}
+
+function buildCancelMessage(successDates, notFoundDates) {
+  const messages = [];
+
+  if (successDates.length > 0) {
+    if (successDates.length === 1) {
+      messages.push(`${successDates[0]} 예약 취소되셨습니다.`);
+    } else {
+      messages.push(`${successDates.join(", ")} 예약 취소되셨습니다.`);
+    }
+  }
+
+  if (notFoundDates.length > 0) {
+    messages.push(`${notFoundDates.join(", ")}에 취소할 예약이 없습니다.`);
+  }
+
+  if (messages.length === 0) return null;
+  return messages.join("\n");
+}
+
+/* ---------------------------
  * 비즈니스 로직
  * --------------------------- */
 
 async function handleReserveLike(utterance, userId) {
-  const extracted = extractFromUtterance(utterance);
-  const date = normalizeDate(extracted.date);
-  const hour = normalizeHour(extracted.time);
+  const dates = extractDatesFromUtterance(utterance);
+  const rawTime = extractTimeFromUtterance(utterance);
+  const hour = normalizeHour(rawTime);
   const period = getPeriod(hour);
 
   console.log("RESERVE utterance:", utterance);
-  console.log("RESERVE extracted:", extracted);
-  console.log("RESERVE date:", date);
+  console.log("RESERVE dates:", dates);
+  console.log("RESERVE rawTime:", rawTime);
   console.log("RESERVE hour:", hour);
   console.log("RESERVE period:", period);
   console.log("RESERVE userId:", userId);
@@ -282,100 +353,135 @@ async function handleReserveLike(utterance, userId) {
     return { noReply: true };
   }
 
-  if (!date || period === null) {
+  if (!dates.length || period === null) {
     return {
       message:
-        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요",
-      shouldSave: false,
+        "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요 / 20일 21일 13시 예약할게요",
+      shouldSaveList: [],
     };
   }
 
-  try {
-    const precheck = await prepareReserve({
-      date,
-      period,
-      userId,
-    });
+  const successDates = [];
+  const successItems = [];
+  const closedDates = [];
+  const duplicateDates = [];
+  const failedDates = [];
 
-    console.log("prepareReserve 결과:", precheck);
+  for (const date of dates) {
+    try {
+      const precheck = await prepareReserve({
+        date,
+        period,
+        userId,
+      });
 
-    if (!precheck.ok) {
-      console.log("prepareReserve 실패:", precheck);
-      return { noReply: true };
+      console.log("prepareReserve 결과:", date, precheck);
+
+      if (!precheck.ok) {
+        failedDates.push(date);
+        continue;
+      }
+
+      if (precheck.result === "duplicate") {
+        duplicateDates.push(date);
+        continue;
+      }
+
+      if (precheck.result === "closed") {
+        closedDates.push(date);
+        continue;
+      }
+
+      if (precheck.result !== "ok") {
+        failedDates.push(date);
+        continue;
+      }
+
+      successDates.push(date);
+      successItems.push({
+        date,
+        time: formatHour(hour),
+        userId,
+        name: precheck.name || "미등록",
+      });
+    } catch (err) {
+      console.error("handleReserveLike item error:", date, err);
+      failedDates.push(date);
     }
+  }
 
-    if (precheck.result === "duplicate") {
-      return {
-        message: `${date}에는 이미 예약이 있습니다. 하루에 1건만 예약 가능합니다.`,
-        shouldSave: false,
-      };
-    }
+  const message = buildReserveMessage(
+    successDates,
+    closedDates,
+    duplicateDates,
+    failedDates
+  );
 
-    if (precheck.result === "closed") {
-      return {
-        message: "예약 마감되었습니다.",
-        shouldSave: false,
-      };
-    }
-
-    if (precheck.result !== "ok") {
-      console.log("알 수 없는 precheck 결과:", precheck);
-      return { noReply: true };
-    }
-
-    return {
-      message: "예약 확정되셨습니다.",
-      shouldSave: true,
-      date,
-      time: formatHour(hour),
-      userId,
-      name: precheck.name || "미등록",
-    };
-  } catch (err) {
-    console.error("handleReserveLike error:", err);
+  if (!message) {
     return { noReply: true };
   }
+
+  return {
+    message,
+    shouldSaveList: successItems,
+  };
 }
 
 async function handleCancel(utterance, userId) {
-  const extracted = extractFromUtterance(utterance);
-  const date = normalizeDate(extracted.date);
+  const dates = extractDatesFromUtterance(utterance);
 
   console.log("CANCEL utterance:", utterance);
-  console.log("CANCEL extracted:", extracted);
-  console.log("CANCEL date:", date);
+  console.log("CANCEL dates:", dates);
   console.log("CANCEL userId:", userId);
 
   if (!userId) {
     return { noReply: true };
   }
 
-  if (!date) {
+  if (!dates.length) {
     return {
-      message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요",
-      shouldCancel: false,
+      message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요 / 19일 20일 예약 취소할게요",
+      shouldCancelList: [],
     };
   }
 
-  const existing = await findExistingReservation(userId, date);
-  console.log("findReservation 결과:", existing);
+  const successDates = [];
+  const cancelItems = [];
+  const notFoundDates = [];
 
-  if (!existing.ok) {
+  for (const date of dates) {
+    try {
+      const existing = await findExistingReservation(userId, date);
+      console.log("findReservation 결과:", date, existing);
+
+      if (!existing.ok) {
+        continue;
+      }
+
+      if (!existing.found) {
+        notFoundDates.push(date);
+        continue;
+      }
+
+      successDates.push(date);
+      cancelItems.push({
+        date,
+        userId,
+      });
+    } catch (err) {
+      console.error("handleCancel item error:", date, err);
+    }
+  }
+
+  const message = buildCancelMessage(successDates, notFoundDates);
+
+  if (!message) {
     return { noReply: true };
   }
 
-  if (!existing.found) {
-    return {
-      message: `${date}에 취소할 예약이 없습니다.`,
-      shouldCancel: false,
-    };
-  }
-
   return {
-    message: `${date} 예약 취소되셨습니다.`,
-    shouldCancel: true,
-    date,
-    userId,
+    message,
+    shouldCancelList: cancelItems,
   };
 }
 
@@ -433,31 +539,39 @@ async function handleWebhook(req, res) {
       });
     }
 
-    if (result.shouldSave) {
-      saveReservation({
-        date: result.date,
-        time: result.time,
-        userId: result.userId,
-        name: result.name,
-      })
-        .then((scriptResult) => {
-          console.log("예약 기록 완료:", scriptResult);
+    if (Array.isArray(result.shouldSaveList) && result.shouldSaveList.length > 0) {
+      Promise.allSettled(
+        result.shouldSaveList.map((item) =>
+          saveReservation({
+            date: item.date,
+            time: item.time,
+            userId: item.userId,
+            name: item.name,
+          })
+        )
+      )
+        .then((results) => {
+          console.log("복수 예약 기록 완료:", results);
         })
         .catch((err) => {
-          console.error("saveReservation error:", err);
+          console.error("saveReservation list error:", err);
         });
     }
 
-    if (result.shouldCancel) {
-      cancelReservation({
-        date: result.date,
-        userId: result.userId,
-      })
-        .then((scriptResult) => {
-          console.log("예약 취소 처리 결과:", scriptResult);
+    if (Array.isArray(result.shouldCancelList) && result.shouldCancelList.length > 0) {
+      Promise.allSettled(
+        result.shouldCancelList.map((item) =>
+          cancelReservation({
+            date: item.date,
+            userId: item.userId,
+          })
+        )
+      )
+        .then((results) => {
+          console.log("복수 예약 취소 처리 결과:", results);
         })
         .catch((err) => {
-          console.error("cancelReservation error:", err);
+          console.error("cancelReservation list error:", err);
         });
     }
   } catch (error) {
