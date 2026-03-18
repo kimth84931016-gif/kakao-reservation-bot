@@ -6,13 +6,13 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbxVk31JmmnUa2OmL402BS3xPQAKjdD2TT72GkgKv1q_HZJ9F1ZgdwaKGKOiEodciElh/exec";
+  "https://script.google.com/macros/s/AKfycbw_2W5WUG3VFjH4t-hSKHMwuqeLxC4m3yUQQDpE5XV6gc3jtBi7AObTMKxftNZCejNb/exec";
 
 /* ---------------------------
  * 공통 유틸
  * --------------------------- */
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = 7000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -166,7 +166,7 @@ function buildKakaoResponse(text) {
  * Apps Script 호출
  * --------------------------- */
 
-async function callScript(payload, timeoutMs = 3500) {
+async function callScript(payload, timeoutMs = 7000) {
   try {
     const response = await fetchWithTimeout(
       WRITE_URL,
@@ -204,27 +204,36 @@ async function callScript(payload, timeoutMs = 3500) {
 }
 
 async function ensureMapping(userId) {
-  return callScript({
-    action: "ensureMapping",
-    userId,
-  });
+  return callScript(
+    {
+      action: "ensureMapping",
+      userId,
+    },
+    7000
+  );
 }
 
 async function prepareReserve({ date, period, userId }) {
-  return callScript({
-    action: "prepareReserve",
-    date,
-    period,
-    userId,
-  });
+  return callScript(
+    {
+      action: "prepareReserve",
+      date,
+      period,
+      userId,
+    },
+    7000
+  );
 }
 
 async function findExistingReservation(userId, date) {
-  return callScript({
-    action: "findReservation",
-    userId,
-    date,
-  });
+  return callScript(
+    {
+      action: "findReservation",
+      userId,
+      date,
+    },
+    7000
+  );
 }
 
 async function saveReservation({ date, time, userId, name }) {
@@ -237,7 +246,7 @@ async function saveReservation({ date, time, userId, name }) {
       userId,
       status: "예약완료",
     },
-    8000
+    12000
   );
 }
 
@@ -248,7 +257,7 @@ async function cancelReservation({ date, userId }) {
       date,
       userId,
     },
-    8000
+    12000
   );
 }
 
@@ -270,10 +279,7 @@ async function handleReserveLike(utterance, userId) {
   console.log("RESERVE userId:", userId);
 
   if (!userId) {
-    return {
-      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      shouldSave: false,
-    };
+    return { noReply: true };
   }
 
   if (!date || period === null) {
@@ -291,11 +297,11 @@ async function handleReserveLike(utterance, userId) {
       userId,
     });
 
+    console.log("prepareReserve 결과:", precheck);
+
     if (!precheck.ok) {
-      return {
-        message: "담당자 확인 후 연락드리겠습니다.",
-        shouldSave: false,
-      };
+      console.log("prepareReserve 실패:", precheck);
+      return { noReply: true };
     }
 
     if (precheck.result === "duplicate") {
@@ -312,18 +318,9 @@ async function handleReserveLike(utterance, userId) {
       };
     }
 
-    if (precheck.result === "unavailable") {
-      return {
-        message: "담당자 확인 후 연락드리겠습니다.",
-        shouldSave: false,
-      };
-    }
-
     if (precheck.result !== "ok") {
-      return {
-        message: "담당자 확인 후 연락드리겠습니다.",
-        shouldSave: false,
-      };
+      console.log("알 수 없는 precheck 결과:", precheck);
+      return { noReply: true };
     }
 
     return {
@@ -336,10 +333,7 @@ async function handleReserveLike(utterance, userId) {
     };
   } catch (err) {
     console.error("handleReserveLike error:", err);
-    return {
-      message: "담당자 확인 후 연락드리겠습니다.",
-      shouldSave: false,
-    };
+    return { noReply: true };
   }
 }
 
@@ -353,10 +347,7 @@ async function handleCancel(utterance, userId) {
   console.log("CANCEL userId:", userId);
 
   if (!userId) {
-    return {
-      message: "사용자 정보를 확인할 수 없어 담당자 확인 후 연락드리겠습니다.",
-      shouldCancel: false,
-    };
+    return { noReply: true };
   }
 
   if (!date) {
@@ -367,12 +358,10 @@ async function handleCancel(utterance, userId) {
   }
 
   const existing = await findExistingReservation(userId, date);
+  console.log("findReservation 결과:", existing);
 
   if (!existing.ok) {
-    return {
-      message: "담당자 확인 후 연락드리겠습니다.",
-      shouldCancel: false,
-    };
+    return { noReply: true };
   }
 
   if (!existing.found) {
@@ -473,7 +462,7 @@ async function handleWebhook(req, res) {
     }
   } catch (error) {
     console.error("handleWebhook error:", error);
-    return res.json(buildKakaoResponse("담당자 확인 후 연락드리겠습니다."));
+    return res.status(204).end();
   }
 }
 
