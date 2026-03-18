@@ -6,7 +6,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const WRITE_URL =
-  "https://script.google.com/macros/s/AKfycbw_2W5WUG3VFjH4t-hSKHMwuqeLxC4m3yUQQDpE5XV6gc3jtBi7AObTMKxftNZCejNb/exec";
+  "https://script.google.com/macros/s/AKfycbwmE6XyIGCzhtgdPtVTgwtE1sC_fWNNXVk20mU7irJch6S97ZpxlF41gdjEqhSV4_w/exec";
 
 /* ---------------------------
  * 공통 유틸
@@ -231,51 +231,46 @@ async function ensureMapping(userId) {
   );
 }
 
-async function prepareReserve({ date, period, userId }) {
+async function prepareReserveBulk({ dates, period, userId }) {
   return callScript(
     {
-      action: "prepareReserve",
-      date,
+      action: "prepareReserveBulk",
+      dates,
       period,
       userId,
     },
-    7000
+    10000
   );
 }
 
-async function findExistingReservation(userId, date) {
+async function reserveBulk({ items }) {
   return callScript(
     {
-      action: "findReservation",
-      userId,
-      date,
+      action: "reserveBulk",
+      items,
     },
-    7000
+    20000
   );
 }
 
-async function saveReservation({ date, time, userId, name }) {
+async function findReservationBulk({ dates, userId }) {
   return callScript(
     {
-      action: "reserve",
-      date,
-      time,
-      name,
+      action: "findReservationBulk",
+      dates,
       userId,
-      status: "예약완료",
     },
-    12000
+    10000
   );
 }
 
-async function cancelReservation({ date, userId }) {
+async function cancelBulk({ items }) {
   return callScript(
     {
-      action: "cancel",
-      date,
-      userId,
+      action: "cancelBulk",
+      items,
     },
-    12000
+    20000
   );
 }
 
@@ -290,9 +285,7 @@ function buildReserveMessage(successDates, closedDates, duplicateDates, failedDa
     if (successDates.length === 1) {
       messages.push(`${formatDateShort(successDates[0])} 예약 확정되셨습니다.`);
     } else {
-      messages.push(
-        `${successDates.map(formatDateShort).join(", ")} 예약 확정되셨습니다.`
-      );
+      messages.push(`${successDates.map(formatDateShort).join(", ")} 예약 확정되셨습니다.`);
     }
   }
 
@@ -301,9 +294,7 @@ function buildReserveMessage(successDates, closedDates, duplicateDates, failedDa
   }
 
   if (duplicateDates.length > 0) {
-    messages.push(
-      `${duplicateDates.map(formatDateShort).join(", ")}에는 이미 예약이 있습니다.`
-    );
+    messages.push(`${duplicateDates.map(formatDateShort).join(", ")}에는 이미 예약이 있습니다.`);
   }
 
   if (failedDates.length > 0 && messages.length === 0) {
@@ -357,8 +348,20 @@ async function handleReserveLike(utterance, userId) {
     return {
       message:
         "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요 / 20일 21일 13시 예약할게요",
-      shouldSaveList: [],
+      shouldSaveItems: [],
     };
+  }
+
+  const precheck = await prepareReserveBulk({
+    dates,
+    period,
+    userId,
+  });
+
+  console.log("prepareReserveBulk 결과:", precheck);
+
+  if (!precheck.ok || !Array.isArray(precheck.results)) {
+    return { noReply: true };
   }
 
   const successDates = [];
@@ -367,47 +370,37 @@ async function handleReserveLike(utterance, userId) {
   const duplicateDates = [];
   const failedDates = [];
 
-  for (const date of dates) {
-    try {
-      const precheck = await prepareReserve({
-        date,
-        period,
-        userId,
-      });
+  for (const item of precheck.results) {
+    const date = item.date;
 
-      console.log("prepareReserve 결과:", date, precheck);
+    if (!item.ok) {
+      failedDates.push(date);
+      continue;
+    }
 
-      if (!precheck.ok) {
-        failedDates.push(date);
-        continue;
-      }
+    if (item.result === "duplicate") {
+      duplicateDates.push(date);
+      continue;
+    }
 
-      if (precheck.result === "duplicate") {
-        duplicateDates.push(date);
-        continue;
-      }
+    if (item.result === "closed") {
+      closedDates.push(date);
+      continue;
+    }
 
-      if (precheck.result === "closed") {
-        closedDates.push(date);
-        continue;
-      }
-
-      if (precheck.result !== "ok") {
-        failedDates.push(date);
-        continue;
-      }
-
+    if (item.result === "ok") {
       successDates.push(date);
       successItems.push({
         date,
         time: formatHour(hour),
         userId,
-        name: precheck.name || "미등록",
+        name: item.name || precheck.name || "미등록",
+        status: "예약완료",
       });
-    } catch (err) {
-      console.error("handleReserveLike item error:", date, err);
-      failedDates.push(date);
+      continue;
     }
+
+    failedDates.push(date);
   }
 
   const message = buildReserveMessage(
@@ -423,7 +416,7 @@ async function handleReserveLike(utterance, userId) {
 
   return {
     message,
-    shouldSaveList: successItems,
+    shouldSaveItems: successItems,
   };
 }
 
@@ -441,35 +434,36 @@ async function handleCancel(utterance, userId) {
   if (!dates.length) {
     return {
       message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요 / 19일 20일 예약 취소할게요",
-      shouldCancelList: [],
+      shouldCancelItems: [],
     };
+  }
+
+  const found = await findReservationBulk({
+    dates,
+    userId,
+  });
+
+  console.log("findReservationBulk 결과:", found);
+
+  if (!found.ok || !Array.isArray(found.results)) {
+    return { noReply: true };
   }
 
   const successDates = [];
   const cancelItems = [];
   const notFoundDates = [];
 
-  for (const date of dates) {
-    try {
-      const existing = await findExistingReservation(userId, date);
-      console.log("findReservation 결과:", date, existing);
+  for (const item of found.results) {
+    const date = item.date;
 
-      if (!existing.ok) {
-        continue;
-      }
-
-      if (!existing.found) {
-        notFoundDates.push(date);
-        continue;
-      }
-
+    if (item.ok && item.found) {
       successDates.push(date);
       cancelItems.push({
         date,
         userId,
       });
-    } catch (err) {
-      console.error("handleCancel item error:", date, err);
+    } else {
+      notFoundDates.push(date);
     }
   }
 
@@ -481,7 +475,7 @@ async function handleCancel(utterance, userId) {
 
   return {
     message,
-    shouldCancelList: cancelItems,
+    shouldCancelItems: cancelItems,
   };
 }
 
@@ -539,39 +533,27 @@ async function handleWebhook(req, res) {
       });
     }
 
-    if (Array.isArray(result.shouldSaveList) && result.shouldSaveList.length > 0) {
-      Promise.allSettled(
-        result.shouldSaveList.map((item) =>
-          saveReservation({
-            date: item.date,
-            time: item.time,
-            userId: item.userId,
-            name: item.name,
-          })
-        )
-      )
-        .then((results) => {
-          console.log("복수 예약 기록 완료:", results);
+    if (Array.isArray(result.shouldSaveItems) && result.shouldSaveItems.length > 0) {
+      reserveBulk({
+        items: result.shouldSaveItems,
+      })
+        .then((bulkResult) => {
+          console.log("reserveBulk 처리 결과:", bulkResult);
         })
         .catch((err) => {
-          console.error("saveReservation list error:", err);
+          console.error("reserveBulk error:", err);
         });
     }
 
-    if (Array.isArray(result.shouldCancelList) && result.shouldCancelList.length > 0) {
-      Promise.allSettled(
-        result.shouldCancelList.map((item) =>
-          cancelReservation({
-            date: item.date,
-            userId: item.userId,
-          })
-        )
-      )
-        .then((results) => {
-          console.log("복수 예약 취소 처리 결과:", results);
+    if (Array.isArray(result.shouldCancelItems) && result.shouldCancelItems.length > 0) {
+      cancelBulk({
+        items: result.shouldCancelItems,
+      })
+        .then((bulkResult) => {
+          console.log("cancelBulk 처리 결과:", bulkResult);
         })
         .catch((err) => {
-          console.error("cancelReservation list error:", err);
+          console.error("cancelBulk error:", err);
         });
     }
   } catch (error) {
