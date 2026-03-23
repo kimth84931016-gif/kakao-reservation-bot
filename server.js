@@ -8,6 +8,13 @@ const PORT = process.env.PORT || 3000;
 const WRITE_URL =
   "https://script.google.com/macros/s/AKfycbwmE6XyIGCzhtgdPtVTgwtE1sC_fWNNXVk20mU7irJch6S97ZpxlF41gdjEqhSV4_w/exec";
 
+/**
+ * 상담 연결 블록(인텐트) ID
+ * 사용자가 준 URL:
+ * https://chatbot.kakao.com/bot/69a948d47ba2f76e5b31be53/intent/69c107bd10164d295793bd15?scenarioId=69a9498e6de4b64be3c18801
+ */
+const COUNSEL_BLOCK_ID = "69c107bd10164d295793bd15";
+
 /* ---------------------------
  * 공통 유틸
  * --------------------------- */
@@ -99,8 +106,40 @@ function detectIntent(text) {
   return "unknown";
 }
 
-function buildKakaoResponse(text) {
-  return {
+function uniq(arr) {
+  return [...new Set(arr)];
+}
+
+function formatDateShort(date) {
+  const m = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return date;
+  return `${parseInt(m[2], 10)}월 ${parseInt(m[3], 10)}일`;
+}
+
+function appendFinalizeGuide(message, guideText) {
+  const base = String(message || "").trim();
+  const guide = String(guideText || "").trim();
+
+  if (!guide) return base;
+  if (!base) return guide;
+
+  return `${base}\n${guide}`;
+}
+
+function getReserveFinalizeGuide() {
+  return "아래 버튼을 눌러 예약을 마무리해주세요.";
+}
+
+function getCancelFinalizeGuide() {
+  return "아래 버튼을 눌러 취소를 마무리해주세요.";
+}
+
+/**
+ * 카카오 응답 생성
+ * quickReply가 있으면 버튼 함께 전송
+ */
+function buildKakaoResponse(text, quickReply = null) {
+  const response = {
     version: "2.0",
     template: {
       outputs: [
@@ -112,16 +151,19 @@ function buildKakaoResponse(text) {
       ],
     },
   };
-}
 
-function uniq(arr) {
-  return [...new Set(arr)];
-}
+  if (quickReply && quickReply.label && quickReply.blockId) {
+    response.template.quickReplies = [
+      {
+        label: quickReply.label,
+        action: "block",
+        blockId: quickReply.blockId,
+        extra: quickReply.extra || {},
+      },
+    ];
+  }
 
-function formatDateShort(date) {
-  const m = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return date;
-  return `${parseInt(m[2], 10)}월 ${parseInt(m[3], 10)}일`;
+  return response;
 }
 
 /* ---------------------------
@@ -309,14 +351,14 @@ function buildCancelMessage(successDates, notFoundDates) {
 
   if (successDates.length > 0) {
     if (successDates.length === 1) {
-      messages.push(`${successDates[0]} 예약 취소되셨습니다.`);
+      messages.push(`${formatDateShort(successDates[0])} 예약 취소되셨습니다.`);
     } else {
-      messages.push(`${successDates.join(", ")} 예약 취소되셨습니다.`);
+      messages.push(`${successDates.map(formatDateShort).join(", ")} 예약 취소되셨습니다.`);
     }
   }
 
   if (notFoundDates.length > 0) {
-    messages.push(`${notFoundDates.join(", ")}에 취소할 예약이 없습니다.`);
+    messages.push(`${notFoundDates.map(formatDateShort).join(", ")}에 취소할 예약이 없습니다.`);
   }
 
   if (messages.length === 0) return null;
@@ -349,6 +391,7 @@ async function handleReserveLike(utterance, userId) {
       message:
         "날짜와 시간을 정확히 말씀해 주세요. 예: 3월 13일 오전 예약할게요 / 3월 13일 13시 예약할게요 / 20일 21일 13시 예약할게요",
       shouldSaveItems: [],
+      quickReply: null,
     };
   }
 
@@ -403,7 +446,7 @@ async function handleReserveLike(utterance, userId) {
     failedDates.push(date);
   }
 
-  const message = buildReserveMessage(
+  let message = buildReserveMessage(
     successDates,
     closedDates,
     duplicateDates,
@@ -414,9 +457,23 @@ async function handleReserveLike(utterance, userId) {
     return { noReply: true };
   }
 
+  let quickReply = null;
+
+  if (successDates.length > 0) {
+    message = appendFinalizeGuide(message, getReserveFinalizeGuide());
+    quickReply = {
+      label: "예약 마무리",
+      blockId: COUNSEL_BLOCK_ID,
+      extra: {
+        finalizeType: "reserve",
+      },
+    };
+  }
+
   return {
     message,
     shouldSaveItems: successItems,
+    quickReply,
   };
 }
 
@@ -435,6 +492,7 @@ async function handleCancel(utterance, userId) {
     return {
       message: "취소할 날짜를 함께 말씀해 주세요. 예: 3월 17일 예약 취소할게요 / 19일 20일 예약 취소할게요",
       shouldCancelItems: [],
+      quickReply: null,
     };
   }
 
@@ -467,15 +525,29 @@ async function handleCancel(utterance, userId) {
     }
   }
 
-  const message = buildCancelMessage(successDates, notFoundDates);
+  let message = buildCancelMessage(successDates, notFoundDates);
 
   if (!message) {
     return { noReply: true };
   }
 
+  let quickReply = null;
+
+  if (successDates.length > 0) {
+    message = appendFinalizeGuide(message, getCancelFinalizeGuide());
+    quickReply = {
+      label: "취소 마무리",
+      blockId: COUNSEL_BLOCK_ID,
+      extra: {
+        finalizeType: "cancel",
+      },
+    };
+  }
+
   return {
     message,
     shouldCancelItems: cancelItems,
+    quickReply,
   };
 }
 
@@ -523,7 +595,7 @@ async function handleWebhook(req, res) {
       return res.status(204).end();
     }
 
-    res.json(buildKakaoResponse(result.message));
+    res.json(buildKakaoResponse(result.message, result.quickReply));
 
     const userId = getUserId(req.body);
 
