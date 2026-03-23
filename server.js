@@ -462,7 +462,7 @@ async function handleReserveLike(utterance, userId) {
   if (successDates.length > 0) {
     message = appendFinalizeGuide(message, getReserveFinalizeGuide());
     quickReply = {
-      label: "예약 마무리",
+      label: "상담 연결",
       blockId: COUNSEL_BLOCK_ID,
       extra: {
         finalizeType: "reserve",
